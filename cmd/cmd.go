@@ -27,27 +27,28 @@ func Run(configPath string, ctx context.Context) {
 
 	// Determine whether to run as a server or client
 	switch {
-	case cfg.Server.BindAddr != "":
-		srv := server.NewServer(&cfg.Server, ctx) // server
-		go srv.Start()
-
+	case len(cfg.Servers) > 0:
+		// Run multiple servers
+		for _, srvConfig := range cfg.Servers {
+			srv := server.NewServer(&srvConfig, ctx)
+			go srv.Start()
+		}
+	
 		// Wait for shutdown signal
 		<-ctx.Done()
-		srv.Stop()
-		logger.Println("shutting down server...")
+		logger.Println("shutting down servers...")
+	
 	case cfg.Client.RemoteAddr != "":
 		clnt := client.NewClient(&cfg.Client, ctx) // client
 		go clnt.Start()
-
-		// Wait for shutdown signal
+	
 		<-ctx.Done()
 		clnt.Stop()
 		logger.Println("shutting down client...")
-
+	
 	default:
 		logger.Fatalf("neither server nor client configuration is properly set.")
-
-	}
+	}	
 }
 
 // loadConfig loads and parses the TOML configuration file.

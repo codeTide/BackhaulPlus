@@ -30,7 +30,7 @@ func NewClient(cfg *config.ClientConfig, parentCtx context.Context) *Client {
 		config: cfg,
 		ctx:    ctx,
 		cancel: cancel,
-		logger: utils.NewLogger(cfg.LogLevel),
+		logger: utils.NewLogger(cfg.LogLevel, cfg.Name),
 	}
 }
 

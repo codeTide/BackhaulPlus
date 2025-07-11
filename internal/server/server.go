@@ -26,7 +26,7 @@ func NewServer(cfg *config.ServerConfig, parentCtx context.Context) *Server {
 		config: cfg,
 		ctx:    ctx,
 		cancel: cancel,
-		logger: utils.NewLogger(cfg.LogLevel),
+		logger: utils.NewLogger(cfg.LogLevel, cfg.Name),
 	}
 }
 

@@ -16,6 +16,7 @@ const (
 
 // ServerConfig represents the configuration for the server.
 type ServerConfig struct {
+	Name 			 string 	   `toml:"name"`
 	BindAddr         string        `toml:"bind_addr"`
 	Transport        TransportType `toml:"transport"`
 	Token            string        `toml:"token"`
@@ -42,6 +43,7 @@ type ServerConfig struct {
 
 // ClientConfig represents the configuration for the client.
 type ClientConfig struct {
+	Name 			 string 	   `toml:"name"`
 	RemoteAddr       string        `toml:"remote_addr"`
 	Transport        TransportType `toml:"transport"`
 	Token            string        `toml:"token"`
@@ -66,6 +68,6 @@ type ClientConfig struct {
 
 // Config represents the complete configuration, including both server and client settings.
 type Config struct {
-	Server ServerConfig `toml:"server"`
-	Client ClientConfig `toml:"client"`
+	Servers []ServerConfig `toml:"server"`
+	Client  ClientConfig   `toml:"client"`
 }

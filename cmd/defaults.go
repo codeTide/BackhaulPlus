@@ -27,106 +27,80 @@ const ( // Default values
 
 func applyDefaults(cfg *config.Config) {
 	// Token
-	if cfg.Server.Token == "" {
-		cfg.Server.Token = defaultToken
+	for i := range cfg.Servers {
+		if cfg.Servers[i].Token == "" {
+			cfg.Servers[i].Token = defaultToken
+		}
+		if cfg.Servers[i].ChannelSize <= 0 {
+			cfg.Servers[i].ChannelSize = defaultChannelSize
+		}
+		if _, err := logrus.ParseLevel(cfg.Servers[i].LogLevel); err != nil {
+			cfg.Servers[i].LogLevel = defaultLogLevel
+		}
+		if cfg.Servers[i].MuxSession <= 0 {
+			cfg.Servers[i].MuxSession = defaultMuxSession
+		}
+		if cfg.Servers[i].Keepalive <= 0 {
+			cfg.Servers[i].Keepalive = defaultKeepAlive
+		}
+		if cfg.Servers[i].MuxVersion <= 0 || cfg.Servers[i].MuxVersion > 2 {
+			cfg.Servers[i].MuxVersion = defaultMuxVersion
+		}
+		if cfg.Servers[i].MaxFrameSize <= 0 {
+			cfg.Servers[i].MaxFrameSize = defaultMaxFrameSize
+		}
+		if cfg.Servers[i].MaxReceiveBuffer <= 0 {
+			cfg.Servers[i].MaxReceiveBuffer = defaultMaxReceiveBuffer
+		}
+		if cfg.Servers[i].MaxStreamBuffer <= 0 {
+			cfg.Servers[i].MaxStreamBuffer = defaultMaxStreamBuffer
+		}
+		if cfg.Servers[i].SnifferLog == "" {
+			cfg.Servers[i].SnifferLog = defaultSnifferLog
+		}
+		if cfg.Servers[i].Heartbeat < 1 {
+			cfg.Servers[i].Heartbeat = deafultHeartbeat
+		}
+		if cfg.Servers[i].MuxCon < 1 {
+			cfg.Servers[i].MuxCon = defaultMuxCon
+		}
 	}
+
+	// Client
 	if cfg.Client.Token == "" {
 		cfg.Client.Token = defaultToken
 	}
-
-	// Nodelay default is false if not valid value found
-
-	// Channel size
-	if cfg.Server.ChannelSize <= 0 {
-		cfg.Server.ChannelSize = defaultChannelSize
-	}
-
-	// Loglevel
 	if _, err := logrus.ParseLevel(cfg.Client.LogLevel); err != nil {
 		cfg.Client.LogLevel = defaultLogLevel
 	}
-
-	if _, err := logrus.ParseLevel(cfg.Server.LogLevel); err != nil {
-		cfg.Server.LogLevel = defaultLogLevel
-	}
-
-	// Retry interval
 	if cfg.Client.RetryInterval <= 0 {
 		cfg.Client.RetryInterval = defaultRetryInterval
 	}
-
-	// Connection pool
 	if cfg.Client.ConnectionPool <= 0 {
 		cfg.Client.ConnectionPool = defaultConnectionPool
-	}
-
-	// Mux Session
-	if cfg.Server.MuxSession <= 0 {
-		cfg.Server.MuxSession = defaultMuxSession
 	}
 	if cfg.Client.MuxSession <= 0 {
 		cfg.Client.MuxSession = defaultMuxSession
 	}
-
-	// PPROF default is false if not valid value found
-
-	// keep alive
-	if cfg.Server.Keepalive <= 0 {
-		cfg.Server.Keepalive = defaultKeepAlive
-	}
 	if cfg.Client.Keepalive <= 0 {
 		cfg.Client.Keepalive = defaultKeepAlive
-	}
-
-	// Mux version
-	if cfg.Server.MuxVersion <= 0 || cfg.Server.MuxVersion > 2 {
-		cfg.Server.MuxVersion = defaultMuxVersion
 	}
 	if cfg.Client.MuxVersion <= 0 || cfg.Client.MuxVersion > 2 {
 		cfg.Client.MuxVersion = defaultMuxVersion
 	}
-	// MaxFrameSize
-	if cfg.Server.MaxFrameSize <= 0 {
-		cfg.Server.MaxFrameSize = defaultMaxFrameSize
-	}
 	if cfg.Client.MaxFrameSize <= 0 {
 		cfg.Client.MaxFrameSize = defaultMaxFrameSize
-	}
-	// MaxReceiveBuffer
-	if cfg.Server.MaxReceiveBuffer <= 0 {
-		cfg.Server.MaxReceiveBuffer = defaultMaxReceiveBuffer
 	}
 	if cfg.Client.MaxReceiveBuffer <= 0 {
 		cfg.Client.MaxReceiveBuffer = defaultMaxReceiveBuffer
 	}
-	// MaxStreamBuffer
-	if cfg.Server.MaxStreamBuffer <= 0 {
-		cfg.Server.MaxStreamBuffer = defaultMaxStreamBuffer
-	}
 	if cfg.Client.MaxStreamBuffer <= 0 {
 		cfg.Client.MaxStreamBuffer = defaultMaxStreamBuffer
-	}
-	// WebPort returns 0 if not exists
-
-	// SnifferLog
-	if cfg.Server.SnifferLog == "" {
-		cfg.Server.SnifferLog = defaultSnifferLog
 	}
 	if cfg.Client.SnifferLog == "" {
 		cfg.Client.SnifferLog = defaultSnifferLog
 	}
-	// Heartbeat
-	if cfg.Server.Heartbeat < 1 { // Minimum accepted interval is 1 second
-		cfg.Server.Heartbeat = deafultHeartbeat
-	}
-
-	// Timeout
-	if cfg.Client.DialTimeout < 1 { // Minimum accepted value is 1 second
+	if cfg.Client.DialTimeout < 1 {
 		cfg.Client.DialTimeout = defaultDialTimeout
-	}
-
-	// Mux concurrancy
-	if cfg.Server.MuxCon < 1 {
-		cfg.Server.MuxCon = defaultMuxCon
 	}
 }

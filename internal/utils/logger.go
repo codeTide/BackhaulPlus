@@ -8,6 +8,23 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type PrefixHook struct {
+	Prefix string
+}
+
+func NewPrefixHook(name string) *PrefixHook {
+	return &PrefixHook{Prefix: "[" + name + "] "}
+}
+
+func (h *PrefixHook) Levels() []logrus.Level {
+	return logrus.AllLevels
+}
+
+func (h *PrefixHook) Fire(entry *logrus.Entry) error {
+	entry.Message = h.Prefix + entry.Message
+	return nil
+}
+
 type CustomFormatter struct{}
 
 func (f *CustomFormatter) Format(entry *logrus.Entry) ([]byte, error) {
@@ -43,18 +60,18 @@ func (f *CustomFormatter) colorize(level logrus.Level, text string) string {
 	}
 }
 
-func NewLogger(logLevel string) *logrus.Logger {
+func NewLogger(logLevel string, prefix ...string) *logrus.Logger {
 	log := logrus.New()
-
-	// Select log level
 	log.SetOutput(os.Stdout)
 
-	// parsed in the config.go already. so err is nil
 	parseLevel, _ := logrus.ParseLevel(logLevel)
-
 	log.SetLevel(parseLevel)
-
 	log.SetFormatter(&CustomFormatter{})
+
+	if len(prefix) > 0 && prefix[0] != "" {
+		log.AddHook(NewPrefixHook(prefix[0]))
+	}
 
 	return log
 }
+
