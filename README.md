@@ -63,10 +63,10 @@ This project offers a robust reverse tunneling solution to overcome NAT and fire
 4. You can also build from source if preferred:  
 
    ```bash
-   git clone https://github.com/musixal/backhaul.git
-   cd backhaul
+   git clone https://github.com/codeTide/BackhaulPlus.git
+   cd BackhaulPlus
    go build
-   ./backhaul
+   ./BackhaulPlus
    ```
 
 ## Usage
