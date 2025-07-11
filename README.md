@@ -1,6 +1,6 @@
-# Backhaul
+# BackhaulPlus
 
-Welcome to the **`Backhaul`** project! This project provides a high-performance reverse tunneling solution optimized for handling massive concurrent connections through NAT and firewalls. This README will guide you through setting up and configuring both server and client components, including details on different transport protocols.
+Welcome to the **`BackhaulPlus`** project! This project is an enhanced fork of Backhaul, providing a **multi-server high-performance reverse tunneling solution**, optimized for handling massive concurrent connections through NAT and firewalls. This README will guide you through setting up and configuring both server and client components, including details on different transport protocols.
 
 ---
 
@@ -20,7 +20,7 @@ Welcome to the **`Backhaul`** project! This project provides a high-performance 
       - [WS Multiplexing Configuration](#ws-multiplexing-configuration)
       - [WSS Multiplexing Configuration](#wss-multiplexing-configuration)
 5. [Generating a Self-Signed TLS Certificate with OpenSSL](#generating-a-self-signed-tls-certificate-with-openssl)
-6. [Running backhaul as a service](#running-backhaul-as-a-service)
+6. [Running BackhaulPlus as a service](#running-backhaulplus-as-a-service)
 7. [FAQ](#faq)
 8. [Benchmark](#benchmark)
 9. [License](#license)
@@ -30,13 +30,13 @@ Welcome to the **`Backhaul`** project! This project provides a high-performance 
 
 ## Introduction
 
-This project offers a robust reverse tunneling solution to overcome NAT and firewall restrictions, supporting various transport protocols. It’s engineered for high efficiency and concurrency.
-
+This project offers a robust **multi-server reverse tunneling solution** to overcome NAT and firewall restrictions, supporting various transport protocols. It’s engineered for **high efficiency and concurrency**, plus it adds the ability to run multiple independent server instances from a single configuration.
 
 ## Features
 
+* **Multi-Server Ready**: Easily define and run multiple independent server instances from a single config file.
 * **High Performance**: Optimized for handling massive concurrent connections efficiently.
-* **Protocol Flexibility**: Supports TCP, WebSocket (WS), and Secure WebSocket (WSS) transports.
+* **Protocol Flexibility**: Supports TCP, WebSocket (WS), Secure WebSocket (WSS) and more.
 * **UDP over TCP**: Implements UDP traffic encapsulation and forwarding over a TCP connection for reliable delivery with built-in congestion control.
 * **Multiplexing**: Enables multiple connections over a single transport with SMUX.
 * **NAT & Firewall Bypass**: Overcomes restrictions with reverse tunneling.
@@ -46,19 +46,18 @@ This project offers a robust reverse tunneling solution to overcome NAT and fire
 * **Web Interface**: Real-time monitoring through a lightweight web interface.
 * **Hot Reload Configuration**: Supports dynamic configuration reloading without server restarts.
 
-
 ## Installation
 
-1. **Download** the latest release from the [GitHub releases page](https://github.com/musixal/backhaul/releases).
-2. **Extract** the archive (adjust the `filename` if needed):  
+1. **Download** the latest release from the [GitHub releases page](https://github.com/codeTide/BackhaulPlus/releases).
+2. **Extract** the archive (adjust the `filename` if needed):
 
    ```bash
-   tar -xzf backhaul_linux_amd64.tar.gz
+   tar -xzf backhaulplus_linux_amd64.tar.gz
    ``` 
 3. **Run** the executable:  
 
    ```bash
-   ./backhaul
+   ./BackhaulPlus
    ```
 4. You can also build from source if preferred:  
 
@@ -71,7 +70,7 @@ This project offers a robust reverse tunneling solution to overcome NAT and fire
 
 ## Usage
 
-The main executable for this project is `backhaul`. It requires a TOML configuration file for both the server and client components.
+The main executable for this project is `BackhaulPlus`. It requires a TOML configuration file for both the server and client components.
 
 ### Configuration Options
 
@@ -82,10 +81,11 @@ To start using the solution, you'll need to configure both server and client com
    Create a configuration file named `config.toml`:
 
     ```toml
-    [server]# Local, IRAN
+    [[server]]
+    name = "SRV1"                 # Custom name for this server instance, used as prefix in logs (optional).
     bind_addr = "0.0.0.0:3080"    # Address and port for the server to listen on (mandatory).
     transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux". mandatory).
-    accept_udp = false             # Enable transferring UDP connections over TCP transport. (optional, default: false)
+    accept_udp = false            # Enable transferring UDP connections over TCP transport. (optional, default: false)
     token = "your_token"          # Authentication token for secure communication (optional).
     keepalive_period = 75         # Interval in seconds to send keep-alive packets.(optional, default: 75s)
     nodelay = false               # Enable TCP_NODELAY (optional, default: false).
@@ -98,34 +98,34 @@ To start using the solution, you'll need to configure both server and client com
     mux_streambuffer = 65536      # 256 KB. The maximum buffer size per individual stream within a connection. (optional)
     sniffer = false               # Enable or disable network sniffing for monitoring data. (optional, default false)
     web_port = 2060               # Port number for the web interface or monitoring interface. (optional, set to 0 to disable).
-    sniffer_log ="/root/log.json" # Filename used to store network traffic and usage data logs. (optional, default backhaul.json)
-    tls_cert = "/root/server.crt" # Path to the TLS certificate file for wss/wssmux. (mandatory).
-    tls_key = "/root/server.key"  # Path to the TLS private key file for wss/wssmux. (mandatory).
+    sniffer_log = "/root/log.json" # Filename used to store network traffic and usage data logs. (optional, default backhaul.json)
+    tls_cert = "/root/server.crt" # Path to the TLS certificate file for wss/wssmux. (mandatory for wss/wssmux).
+    tls_key = "/root/server.key"  # Path to the TLS private key file for wss/wssmux. (mandatory for wss/wssmux).
     log_level = "info"            # Log level ("panic", "fatal", "error", "warn", "info", "debug", "trace", optional, default: "info").
 
     ports = [
-    "443-600",                  # Listen on all ports in the range 443 to 600
-    "443-600:5201",             # Listen on all ports in the range 443 to 600 and forward traffic to 5201
-    "443-600=1.1.1.1:5201",     # Listen on all ports in the range 443 to 600 and forward traffic to 1.1.1.1:5201
-    "443",                      # Listen on local port 443 and forward to remote port 443 (default forwarding).
-    "4000=5000",                # Listen on local port 4000 (bind to all local IPs) and forward to remote port 5000.
-    "127.0.0.2:443=5201",       # Bind to specific local IP (127.0.0.2), listen on port 443, and forward to remote port 5201.
-    "443=1.1.1.1:5201",         # Listen on local port 443 and forward to a specific remote IP (1.1.1.1) on port 5201.
-    "127.0.0.2:443=1.1.1.1:5201",  # Bind to specific local IP (127.0.0.2), listen on port 443, and forward to remote IP (1.1.1.1) on port 5201.
-   ]
-
+      "443-600",                  # Listen on all ports in the range 443 to 600
+      "443-600:5201",             # Listen on all ports in the range 443 to 600 and forward traffic to 5201
+      "443-600=1.1.1.1:5201",     # Listen on all ports in the range 443 to 600 and forward traffic to 1.1.1.1:5201
+      "443",                      # Listen on local port 443 and forward to remote port 443 (default forwarding).
+      "4000=5000",                # Listen on local port 4000 (bind to all local IPs) and forward to remote port 5000.
+      "127.0.0.2:443=5201",       # Bind to specific local IP (127.0.0.2), listen on port 443, and forward to remote port 5201.
+      "443=1.1.1.1:5201",         # Listen on local port 443 and forward to a specific remote IP (1.1.1.1) on port 5201.
+      "127.0.0.2:443=1.1.1.1:5201" # Bind to specific local IP (127.0.0.2), listen on port 443, and forward to remote IP (1.1.1.1) on port 5201.
+    ]
     ```
 
    To start the `server`:
 
    ```sh
-   ./backhaul -c config.toml
+   ./backhaulplus -c config.toml
    ```
 * **Client Configuration**
 
    Create a configuration file named `config.toml` for the client:
    ```toml
    [client]  # Behind NAT, firewall-blocked
+   name = "DEClient"             # Custom name for this client instance, used as prefix in logs (optional).
    remote_addr = "0.0.0.0:3080"  # Server address and port (mandatory).
    edge_ip = "188.114.96.0"      # Edge IP used for CDN connection, specifically for WebSocket-based transports.(Optional, default none)
    transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux". mandatory).
@@ -157,7 +157,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Server**:
 
    ```toml
-   [server]
+   [[server]]
    bind_addr = "0.0.0.0:3080"
    transport = "tcp"
    accept_udp = false 
@@ -208,7 +208,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Server**:
 
    ```toml
-   [server]
+   [[server]]
    bind_addr = "0.0.0.0:3080"
    transport = "tcpmux"
    token = "your_token" 
@@ -260,7 +260,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Server**:
 
    ```toml
-   [server]
+   [[server]]
    bind_addr = "0.0.0.0:3080"
    transport = "udp"
    token = "your_token"
@@ -293,7 +293,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Server**:
 
    ```toml
-   [server]
+   [[server]]
    bind_addr = "0.0.0.0:8080"
    transport = "ws"
    token = "your_token" 
@@ -336,7 +336,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Server**:
 
    ```toml
-   [server]
+   [[server]]
    bind_addr = "0.0.0.0:8443"
    transport = "wss"
    token = "your_token" 
@@ -381,7 +381,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Server**:
 
    ```toml
-   [server]
+   [[server]]
    bind_addr = "0.0.0.0:3080"
    transport = "wsmux"
    token = "your_token" 
@@ -428,7 +428,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Server**:
 
    ```toml
-   [server]
+   [[server]]
    bind_addr = "0.0.0.0:443"
    transport = "wssmux"
    token = "your_token" 
@@ -524,20 +524,20 @@ This will generate a certificate named `server.crt`, valid for 365 days.
 * `server.csr`: The certificate signing request (used to generate the certificate).
 * `server.crt`: Your self-signed TLS certificate.
 
-## Running backhaul as a service
+## Running BackhaulPlus as a service
 
-To create a service file for your backhaul project that ensures the service restarts automatically, you can use the following template for a systemd service file. Assuming your project runs a reverse tunnel and the main executable file is located in a certain path, here's a basic example:
+To create a service file for your BackhaulPlus project that ensures the service restarts automatically, you can use the following template for a systemd service file. Assuming your project runs a reverse tunnel and the main executable file is located in a certain path, here's a basic example:
 
-1. Create the service file `/etc/systemd/system/backhaul.service`:
+1. Create the service file `/etc/systemd/system/BackhaulPlus.service`:
 
 ```ini
 [Unit]
-Description=Backhaul Reverse Tunnel Service
+Description=BackhaulPlus Reverse Tunnel Service
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/root/backhaul -c /root/config.toml
+ExecStart=/root/BackhaulPlus/BackhaulPlus -c /root/BackhaulPlus/config.toml
 Restart=always
 RestartSec=3
 LimitNOFILE=1048576
@@ -549,16 +549,16 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable backhaul.service
-sudo systemctl start backhaul.service
+sudo systemctl enable BackhaulPlus.service
+sudo systemctl start BackhaulPlus.service
 ```
 3. To verify if the service is running:
 ```bash
-sudo systemctl status backhaul.service
+sudo systemctl status BackhaulPlus.service
 ```
-4. View the most recent log entries for the backhaul.service unit:
+4. View the most recent log entries for the BackhaulPlus.service unit:
 ```bash
-journalctl -u backhaul.service -e -f
+journalctl -u BackhaulPlus.service -e -f
 ```
 
 ## FAQ
@@ -584,10 +584,10 @@ This project is licensed under the AGPL-3.0 license. See the LICENSE file for de
 
 Donate TRX (TRC-20) to support our project:
 ``` wallet
-TMVBGzX4qpt12R1qWsJMpT1ttoKH1kus1H
+TKkzfx6GVnARFLpgALXCEyxVpQHTnwtAJt
 ```
 Thanks for your support! 
 
 ## Stargazers over time
-[![Stargazers over time](https://starchart.cc/Musixal/Backhaul.svg?variant=light)](https://starchart.cc/Musixal/Backhaul)
+[![Stargazers over time](https://starchart.cc/codeTide/BackhaulPlus.svg?variant=light)](https://starchart.cc/codeTide/BackhaulPlus)
 
