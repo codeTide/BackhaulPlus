@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/musix/backhaul/internal/utils"
-	"github.com/musix/backhaul/internal/web"
+	"github.com/codeTide/BackhaulPlus/internal/utils"
+	"github.com/codeTide/BackhaulPlus/internal/web"
 
 	"github.com/sirupsen/logrus"
 )

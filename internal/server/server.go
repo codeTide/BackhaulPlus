@@ -6,9 +6,9 @@ import (
 	_ "net/http/pprof"
 	"time"
 
-	"github.com/musix/backhaul/internal/config"
-	"github.com/musix/backhaul/internal/server/transport"
-	"github.com/musix/backhaul/internal/utils"
+	"github.com/codeTide/BackhaulPlus/internal/config"
+	"github.com/codeTide/BackhaulPlus/internal/server/transport"
+	"github.com/codeTide/BackhaulPlus/internal/utils"
 
 	"github.com/sirupsen/logrus"
 )
