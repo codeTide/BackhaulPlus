@@ -33,22 +33,36 @@ func Run(configPath string, ctx context.Context) {
 			srv := server.NewServer(&srvConfig, ctx)
 			go srv.Start()
 		}
-	
+
 		// Wait for shutdown signal
 		<-ctx.Done()
 		logger.Println("shutting down servers...")
-	
-	case cfg.Client.RemoteAddr != "":
-		clnt := client.NewClient(&cfg.Client, ctx) // client
-		go clnt.Start()
-	
+
+	case len(cfg.Clients) > 0:
+		clients := make([]*client.Client, 0, len(cfg.Clients))
+		for i := range cfg.Clients {
+			if cfg.Clients[i].RemoteAddr == "" {
+				logger.Warnf("skipping client %q due to empty remote_addr", cfg.Clients[i].Name)
+				continue
+			}
+			clnt := client.NewClient(&cfg.Clients[i], ctx)
+			clients = append(clients, clnt)
+			go clnt.Start()
+		}
+
+		if len(clients) == 0 {
+			logger.Fatalf("no valid client entries found. each [[client]] needs remote_addr")
+		}
+
 		<-ctx.Done()
-		clnt.Stop()
-		logger.Println("shutting down client...")
-	
+		for _, clnt := range clients {
+			clnt.Stop()
+		}
+		logger.Println("shutting down clients...")
+
 	default:
 		logger.Fatalf("neither server nor client configuration is properly set.")
-	}	
+	}
 }
 
 // loadConfig loads and parses the TOML configuration file.
