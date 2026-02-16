@@ -66,41 +66,43 @@ func applyDefaults(cfg *config.Config) {
 		}
 	}
 
-	// Client
-	if cfg.Client.Token == "" {
-		cfg.Client.Token = defaultToken
-	}
-	if _, err := logrus.ParseLevel(cfg.Client.LogLevel); err != nil {
-		cfg.Client.LogLevel = defaultLogLevel
-	}
-	if cfg.Client.RetryInterval <= 0 {
-		cfg.Client.RetryInterval = defaultRetryInterval
-	}
-	if cfg.Client.ConnectionPool <= 0 {
-		cfg.Client.ConnectionPool = defaultConnectionPool
-	}
-	if cfg.Client.MuxSession <= 0 {
-		cfg.Client.MuxSession = defaultMuxSession
-	}
-	if cfg.Client.Keepalive <= 0 {
-		cfg.Client.Keepalive = defaultKeepAlive
-	}
-	if cfg.Client.MuxVersion <= 0 || cfg.Client.MuxVersion > 2 {
-		cfg.Client.MuxVersion = defaultMuxVersion
-	}
-	if cfg.Client.MaxFrameSize <= 0 {
-		cfg.Client.MaxFrameSize = defaultMaxFrameSize
-	}
-	if cfg.Client.MaxReceiveBuffer <= 0 {
-		cfg.Client.MaxReceiveBuffer = defaultMaxReceiveBuffer
-	}
-	if cfg.Client.MaxStreamBuffer <= 0 {
-		cfg.Client.MaxStreamBuffer = defaultMaxStreamBuffer
-	}
-	if cfg.Client.SnifferLog == "" {
-		cfg.Client.SnifferLog = defaultSnifferLog
-	}
-	if cfg.Client.DialTimeout < 1 {
-		cfg.Client.DialTimeout = defaultDialTimeout
+	// Client(s)
+	for i := range cfg.Clients {
+		if cfg.Clients[i].Token == "" {
+			cfg.Clients[i].Token = defaultToken
+		}
+		if _, err := logrus.ParseLevel(cfg.Clients[i].LogLevel); err != nil {
+			cfg.Clients[i].LogLevel = defaultLogLevel
+		}
+		if cfg.Clients[i].RetryInterval <= 0 {
+			cfg.Clients[i].RetryInterval = defaultRetryInterval
+		}
+		if cfg.Clients[i].ConnectionPool <= 0 {
+			cfg.Clients[i].ConnectionPool = defaultConnectionPool
+		}
+		if cfg.Clients[i].MuxSession <= 0 {
+			cfg.Clients[i].MuxSession = defaultMuxSession
+		}
+		if cfg.Clients[i].Keepalive <= 0 {
+			cfg.Clients[i].Keepalive = defaultKeepAlive
+		}
+		if cfg.Clients[i].MuxVersion <= 0 || cfg.Clients[i].MuxVersion > 2 {
+			cfg.Clients[i].MuxVersion = defaultMuxVersion
+		}
+		if cfg.Clients[i].MaxFrameSize <= 0 {
+			cfg.Clients[i].MaxFrameSize = defaultMaxFrameSize
+		}
+		if cfg.Clients[i].MaxReceiveBuffer <= 0 {
+			cfg.Clients[i].MaxReceiveBuffer = defaultMaxReceiveBuffer
+		}
+		if cfg.Clients[i].MaxStreamBuffer <= 0 {
+			cfg.Clients[i].MaxStreamBuffer = defaultMaxStreamBuffer
+		}
+		if cfg.Clients[i].SnifferLog == "" {
+			cfg.Clients[i].SnifferLog = defaultSnifferLog
+		}
+		if cfg.Clients[i].DialTimeout < 1 {
+			cfg.Clients[i].DialTimeout = defaultDialTimeout
+		}
 	}
 }

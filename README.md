@@ -124,7 +124,7 @@ To start using the solution, you'll need to configure both server and client com
 
    Create a configuration file named `config.toml` for the client:
    ```toml
-   [client]  # Behind NAT, firewall-blocked
+   [[client]]  # Behind NAT, firewall-blocked
    name = "DEClient"             # Custom name for this client instance, used as prefix in logs (optional).
    remote_addr = "0.0.0.0:3080"  # Server address and port (mandatory).
    edge_ip = "188.114.96.0"      # Edge IP used for CDN connection, specifically for WebSocket-based transports.(Optional, default none)
@@ -145,6 +145,8 @@ To start using the solution, you'll need to configure both server and client com
    sniffer_log ="/root/log.json" # Filename used to store network traffic and usage data logs. (optional, default backhaul.json)
    log_level = "info"            # Log level ("panic", "fatal", "error", "warn", "info", "debug", "trace", optional, default: "info").
    ```
+
+   You can define multiple `[[client]]` blocks in the same `config.toml` to connect one BackhaulPlus process to multiple different servers simultaneously.
 
    To start the `client`:
 
@@ -175,7 +177,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Client**:
 
    ```toml
-   [client]
+   [[client]]
    remote_addr = "0.0.0.0:3080"
    transport = "tcp"
    token = "your_token" 
@@ -230,7 +232,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Client**:
 
    ```toml
-   [client]
+   [[client]]
    remote_addr = "0.0.0.0:3080"
    transport = "tcpmux"
    token = "your_token" 
@@ -275,7 +277,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Client**:
 
    ```toml
-   [client]
+   [[client]]
    remote_addr = "0.0.0.0:3080"
    transport = "udp"
    token = "your_token" 
@@ -311,7 +313,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Client**:
 
    ```toml
-   [client]
+   [[client]]
    remote_addr = "0.0.0.0:8080"
    edge_ip = "" 
    transport = "ws"
@@ -355,7 +357,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Client**:
 
    ```toml
-   [client]
+   [[client]]
    remote_addr = "0.0.0.0:8443"
    edge_ip = "" 
    transport = "wss"
@@ -403,7 +405,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Client**:
 
    ```toml
-   [client]
+   [[client]]
    remote_addr = "0.0.0.0:3080"
    edge_ip = "" 
    transport = "wsmux"
@@ -452,7 +454,7 @@ To start using the solution, you'll need to configure both server and client com
 * **Client**:
 
    ```toml
-   [client]
+   [[client]]
    remote_addr = "0.0.0.0:443"
    edge_ip = "" 
    transport = "wssmux"
