@@ -49,7 +49,7 @@ type QuicConfig struct {
 	Heartbeat    time.Duration // in seconds
 	TLSCertFile  string        // Path to the TLS certificate file
 	TLSKeyFile   string        // Path to the TLS key file
-
+	AllowMultiIP bool
 }
 
 func NewQuicServer(parentCtx context.Context, config *QuicConfig, logger *logrus.Logger) *QuicTransport {
@@ -364,7 +364,7 @@ func (s *QuicTransport) acceptTunCon(listener *quic.Listener) {
 			}
 
 			// Drop all suspicious packets from other address rather than server
-			if s.controlChannel != nil && s.controlChannel.RemoteAddr().(*net.UDPAddr).IP.String() != conn.RemoteAddr().(*net.UDPAddr).IP.String() {
+			if !s.config.AllowMultiIP && s.controlChannel != nil && s.controlChannel.RemoteAddr().(*net.UDPAddr).IP.String() != conn.RemoteAddr().(*net.UDPAddr).IP.String() {
 				s.logger.Debugf("suspicious packet from %v. expected address: %v. discarding packet...", conn.RemoteAddr().(*net.UDPAddr).IP.String(), s.controlChannel.RemoteAddr().(*net.UDPAddr).IP.String())
 				//	conn.Close()
 				continue
