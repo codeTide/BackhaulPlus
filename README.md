@@ -87,6 +87,7 @@ To start using the solution, you'll need to configure both server and client com
     transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux". mandatory).
     accept_udp = false            # Enable transferring UDP connections over TCP transport. (optional, default: false)
     token = "your_token"          # Authentication token for secure communication (optional).
+    allow_multi_ip = false        # Allow tunnel/control connections from multiple client IPs on one server instance. (optional, default: false)
     keepalive_period = 75         # Interval in seconds to send keep-alive packets.(optional, default: 75s)
     nodelay = false               # Enable TCP_NODELAY (optional, default: false).
     channel_size = 2048           # Tunnel and Local channel size. Excess connections are discarded. (optional, default: 2048).
@@ -164,6 +165,7 @@ To start using the solution, you'll need to configure both server and client com
    transport = "tcp"
    accept_udp = false 
    token = "your_token"
+   allow_multi_ip = false 
    keepalive_period = 75  
    nodelay = true 
    heartbeat = 40 
@@ -214,6 +216,7 @@ To start using the solution, you'll need to configure both server and client com
    bind_addr = "0.0.0.0:3080"
    transport = "tcpmux"
    token = "your_token" 
+   allow_multi_ip = false 
    keepalive_period = 75
    nodelay = true 
    heartbeat = 40 
@@ -255,6 +258,8 @@ To start using the solution, you'll need to configure both server and client com
 
    `mux_session`: Number of multiplexed sessions. Increase this if you need to handle more simultaneous sessions over a single connection.
    
+   * `allow_multi_ip`: When set to `true` on server transports that use a control channel (e.g. `tcp`, `tcpmux`, `quic`), the server accepts tunnel/control connections from different source IPs instead of pinning to the first client IP.
+
    * Refer to TCP configuration for more information.
 
 
