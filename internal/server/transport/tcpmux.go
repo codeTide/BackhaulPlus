@@ -1,8 +1,11 @@
 package transport
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"runtime"
 	"strconv"
@@ -34,6 +37,9 @@ type TcpMuxTransport struct {
 	restartMutex     sync.Mutex
 	streamCounter    int32
 	sessionCounter   int32
+	extraCtrlMu      sync.Mutex
+	extraCtrlConns   []net.Conn
+	rrControlIdx     int
 }
 
 type TcpMuxConfig struct {
@@ -53,7 +59,7 @@ type TcpMuxConfig struct {
 	WebPort          int
 	KeepAlive        time.Duration
 	Heartbeat        time.Duration // in seconds
-
+	AllowMultiIP     bool
 }
 
 func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -82,6 +88,8 @@ func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *lo
 		controlChannel:   nil, // will be set when a control connection is established
 		streamCounter:    0,
 		sessionCounter:   0,
+		extraCtrlConns:   make([]net.Conn, 0),
+		rrControlIdx:     0,
 		usageMonitor:     web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
 	}
 
@@ -138,6 +146,12 @@ func (s *TcpMuxTransport) Restart() {
 	if s.controlChannel != nil {
 		s.controlChannel.Close()
 	}
+	s.extraCtrlMu.Lock()
+	for _, c := range s.extraCtrlConns {
+		_ = c.Close()
+	}
+	s.extraCtrlConns = nil
+	s.extraCtrlMu.Unlock()
 
 	time.Sleep(2 * time.Second)
 
@@ -155,6 +169,8 @@ func (s *TcpMuxTransport) Restart() {
 	s.config.TunnelStatus = ""
 	s.streamCounter = 0
 	s.sessionCounter = 0
+	s.extraCtrlConns = make([]net.Conn, 0)
+	s.rrControlIdx = 0
 
 	// set the log level again
 	s.logger.SetLevel(level)
@@ -250,16 +266,14 @@ func (s *TcpMuxTransport) channelHandler() {
 			return
 
 		case <-s.reqNewConnChan:
-			err := utils.SendBinaryByte(s.controlChannel, utils.SG_Chan)
-			if err != nil {
+			if err := s.sendNewConnSignalRoundRobin(); err != nil {
 				s.logger.Error("failed to send request new connection signal. ", err)
 				go s.Restart()
 				return
 			}
 
 		case <-ticker.C:
-			err := utils.SendBinaryByte(s.controlChannel, utils.SG_HB)
-			if err != nil {
+			if err := s.broadcastHeartbeat(); err != nil {
 				s.logger.Error("failed to send heartbeat signal")
 				go s.Restart()
 				return
@@ -319,7 +333,7 @@ func (s *TcpMuxTransport) acceptTunnelConn(listener net.Listener) {
 			}
 
 			// Drop all suspicious packets from other address rather than server
-			if s.controlChannel != nil && s.controlChannel.RemoteAddr().(*net.TCPAddr).IP.String() != tcpConn.RemoteAddr().(*net.TCPAddr).IP.String() {
+			if !s.config.AllowMultiIP && s.controlChannel != nil && s.controlChannel.RemoteAddr().(*net.TCPAddr).IP.String() != tcpConn.RemoteAddr().(*net.TCPAddr).IP.String() {
 				s.logger.Debugf("suspicious packet from %v. expected address: %v. discarding packet...", tcpConn.RemoteAddr().(*net.TCPAddr).IP.String(), s.controlChannel.RemoteAddr().(*net.TCPAddr).IP.String())
 				tcpConn.Close()
 				continue
@@ -342,6 +356,14 @@ func (s *TcpMuxTransport) acceptTunnelConn(listener net.Listener) {
 			}
 			if err := tcpConn.SetKeepAlivePeriod(s.config.KeepAlive); err != nil {
 				s.logger.Warnf("failed to set TCP keep-alive period for %s: %v", tcpConn.RemoteAddr().String(), err)
+			}
+
+			if s.config.AllowMultiIP && s.controlChannel != nil {
+				isCtrl, probedConn := s.tryPromoteExtraControlChannel(conn)
+				if isCtrl {
+					continue
+				}
+				conn = probedConn
 			}
 
 			// try to establish a new channel
@@ -372,6 +394,133 @@ func (s *TcpMuxTransport) acceptTunnelConn(listener net.Listener) {
 		}
 	}
 
+}
+
+type prefixedConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (p *prefixedConn) Read(b []byte) (int, error) {
+	return p.r.Read(b)
+}
+
+func (s *TcpMuxTransport) tryPromoteExtraControlChannel(conn net.Conn) (bool, net.Conn) {
+	const maxTokenLen = 512
+
+	if err := conn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond)); err != nil {
+		s.logger.Warnf("failed to set probe deadline for %s: %v", conn.RemoteAddr().String(), err)
+		return false, conn
+	}
+
+	header := make([]byte, 3)
+	n, err := io.ReadFull(conn, header)
+	if err != nil {
+		_ = conn.SetReadDeadline(time.Time{})
+		return false, &prefixedConn{Conn: conn, r: io.MultiReader(bytes.NewReader(header[:n]), conn)}
+	}
+
+	msgLen := int(binary.BigEndian.Uint16(header[:2]))
+	transport := header[2]
+	if transport != utils.SG_Chan || msgLen < 1 || msgLen > maxTokenLen {
+		_ = conn.SetReadDeadline(time.Time{})
+		return false, &prefixedConn{Conn: conn, r: io.MultiReader(bytes.NewReader(header), conn)}
+	}
+
+	body := make([]byte, msgLen)
+	n, err = io.ReadFull(conn, body)
+	if err != nil {
+		_ = conn.SetReadDeadline(time.Time{})
+		fallback := io.MultiReader(bytes.NewReader(header), bytes.NewReader(body[:n]), conn)
+		return false, &prefixedConn{Conn: conn, r: fallback}
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+
+	if string(body) != s.config.Token {
+		s.logger.Warnf("received invalid token while probing extra control channel from %s", conn.RemoteAddr().String())
+		conn.Close()
+		return true, nil
+	}
+
+	if err := utils.SendBinaryTransportString(conn, s.config.Token, utils.SG_Chan); err != nil {
+		s.logger.Errorf("failed to acknowledge extra control channel from %s: %v", conn.RemoteAddr().String(), err)
+		conn.Close()
+		return true, nil
+	}
+
+	s.extraCtrlMu.Lock()
+	s.extraCtrlConns = append(s.extraCtrlConns, conn)
+	s.extraCtrlMu.Unlock()
+
+	s.logger.Infof("accepted additional control channel from %s", conn.RemoteAddr().String())
+	return true, nil
+}
+
+func (s *TcpMuxTransport) sendNewConnSignalRoundRobin() error {
+	s.extraCtrlMu.Lock()
+	defer s.extraCtrlMu.Unlock()
+
+	channels := make([]net.Conn, 0, 1+len(s.extraCtrlConns))
+	if s.controlChannel != nil {
+		channels = append(channels, s.controlChannel)
+	}
+	channels = append(channels, s.extraCtrlConns...)
+
+	if len(channels) == 0 {
+		return fmt.Errorf("control channel is nil")
+	}
+
+	start := s.rrControlIdx % len(channels)
+	for i := 0; i < len(channels); i++ {
+		idx := (start + i) % len(channels)
+		if err := utils.SendBinaryByte(channels[idx], utils.SG_Chan); err == nil {
+			s.rrControlIdx = (idx + 1) % len(channels)
+			return nil
+		} else {
+			_ = channels[idx].Close()
+		}
+	}
+
+	return fmt.Errorf("failed to send new connection signal to all control channels")
+}
+
+func (s *TcpMuxTransport) broadcastHeartbeat() error {
+	s.extraCtrlMu.Lock()
+	defer s.extraCtrlMu.Unlock()
+
+	channels := make([]net.Conn, 0, 1+len(s.extraCtrlConns))
+	if s.controlChannel != nil {
+		channels = append(channels, s.controlChannel)
+	}
+	channels = append(channels, s.extraCtrlConns...)
+
+	if len(channels) == 0 {
+		return fmt.Errorf("control channel is nil")
+	}
+
+	aliveExtras := make([]net.Conn, 0, len(s.extraCtrlConns))
+	mainAlive := true
+
+	for _, ch := range channels {
+		if err := utils.SendBinaryByte(ch, utils.SG_HB); err != nil {
+			if s.controlChannel != nil && ch == s.controlChannel {
+				mainAlive = false
+			}
+			_ = ch.Close()
+			continue
+		}
+
+		if s.controlChannel == nil || ch != s.controlChannel {
+			aliveExtras = append(aliveExtras, ch)
+		}
+	}
+
+	s.extraCtrlConns = aliveExtras
+	if !mainAlive {
+		return fmt.Errorf("main control channel heartbeat failed")
+	}
+
+	return nil
 }
 
 func (s *TcpMuxTransport) parsePortMappings() {
