@@ -1,8 +1,11 @@
 package transport
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"runtime"
 	"strconv"
@@ -34,6 +37,8 @@ type TcpMuxTransport struct {
 	restartMutex     sync.Mutex
 	streamCounter    int32
 	sessionCounter   int32
+	extraCtrlMu      sync.Mutex
+	extraCtrlConns   []net.Conn
 }
 
 type TcpMuxConfig struct {
@@ -82,6 +87,7 @@ func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *lo
 		controlChannel:   nil, // will be set when a control connection is established
 		streamCounter:    0,
 		sessionCounter:   0,
+		extraCtrlConns:   make([]net.Conn, 0),
 		usageMonitor:     web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
 	}
 
@@ -138,6 +144,12 @@ func (s *TcpMuxTransport) Restart() {
 	if s.controlChannel != nil {
 		s.controlChannel.Close()
 	}
+	s.extraCtrlMu.Lock()
+	for _, c := range s.extraCtrlConns {
+		_ = c.Close()
+	}
+	s.extraCtrlConns = nil
+	s.extraCtrlMu.Unlock()
 
 	time.Sleep(2 * time.Second)
 
@@ -155,6 +167,7 @@ func (s *TcpMuxTransport) Restart() {
 	s.config.TunnelStatus = ""
 	s.streamCounter = 0
 	s.sessionCounter = 0
+	s.extraCtrlConns = make([]net.Conn, 0)
 
 	// set the log level again
 	s.logger.SetLevel(level)
@@ -344,6 +357,14 @@ func (s *TcpMuxTransport) acceptTunnelConn(listener net.Listener) {
 				s.logger.Warnf("failed to set TCP keep-alive period for %s: %v", tcpConn.RemoteAddr().String(), err)
 			}
 
+			if s.config.AllowMultiIP && s.controlChannel != nil {
+				isCtrl, probedConn := s.tryPromoteExtraControlChannel(conn)
+				if isCtrl {
+					continue
+				}
+				conn = probedConn
+			}
+
 			// try to establish a new channel
 			if s.controlChannel == nil {
 				s.logger.Info("control channel not found, attempting to establish a new session")
@@ -372,6 +393,66 @@ func (s *TcpMuxTransport) acceptTunnelConn(listener net.Listener) {
 		}
 	}
 
+}
+
+type prefixedConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (p *prefixedConn) Read(b []byte) (int, error) {
+	return p.r.Read(b)
+}
+
+func (s *TcpMuxTransport) tryPromoteExtraControlChannel(conn net.Conn) (bool, net.Conn) {
+	const maxTokenLen = 512
+
+	if err := conn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond)); err != nil {
+		s.logger.Warnf("failed to set probe deadline for %s: %v", conn.RemoteAddr().String(), err)
+		return false, conn
+	}
+
+	header := make([]byte, 3)
+	n, err := io.ReadFull(conn, header)
+	if err != nil {
+		_ = conn.SetReadDeadline(time.Time{})
+		return false, &prefixedConn{Conn: conn, r: io.MultiReader(bytes.NewReader(header[:n]), conn)}
+	}
+
+	msgLen := int(binary.BigEndian.Uint16(header[:2]))
+	transport := header[2]
+	if transport != utils.SG_Chan || msgLen < 1 || msgLen > maxTokenLen {
+		_ = conn.SetReadDeadline(time.Time{})
+		return false, &prefixedConn{Conn: conn, r: io.MultiReader(bytes.NewReader(header), conn)}
+	}
+
+	body := make([]byte, msgLen)
+	n, err = io.ReadFull(conn, body)
+	if err != nil {
+		_ = conn.SetReadDeadline(time.Time{})
+		fallback := io.MultiReader(bytes.NewReader(header), bytes.NewReader(body[:n]), conn)
+		return false, &prefixedConn{Conn: conn, r: fallback}
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+
+	if string(body) != s.config.Token {
+		s.logger.Warnf("received invalid token while probing extra control channel from %s", conn.RemoteAddr().String())
+		conn.Close()
+		return true, nil
+	}
+
+	if err := utils.SendBinaryTransportString(conn, s.config.Token, utils.SG_Chan); err != nil {
+		s.logger.Errorf("failed to acknowledge extra control channel from %s: %v", conn.RemoteAddr().String(), err)
+		conn.Close()
+		return true, nil
+	}
+
+	s.extraCtrlMu.Lock()
+	s.extraCtrlConns = append(s.extraCtrlConns, conn)
+	s.extraCtrlMu.Unlock()
+
+	s.logger.Infof("accepted additional control channel from %s", conn.RemoteAddr().String())
+	return true, nil
 }
 
 func (s *TcpMuxTransport) parsePortMappings() {
