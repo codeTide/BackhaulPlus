@@ -358,7 +358,7 @@ func (s *TcpMuxTransport) acceptTunnelConn(listener net.Listener) {
 				s.logger.Warnf("failed to set TCP keep-alive period for %s: %v", tcpConn.RemoteAddr().String(), err)
 			}
 
-			if s.config.AllowMultiIP && s.controlChannel != nil {
+			if s.config.AllowMultiIP && s.controlChannel != nil && s.shouldProbeForExtraControl(tcpConn.RemoteAddr().(*net.TCPAddr).IP.String()) {
 				isCtrl, probedConn := s.tryPromoteExtraControlChannel(conn)
 				if isCtrl {
 					continue
@@ -454,6 +454,28 @@ func (s *TcpMuxTransport) tryPromoteExtraControlChannel(conn net.Conn) (bool, ne
 
 	s.logger.Infof("accepted additional control channel from %s", conn.RemoteAddr().String())
 	return true, nil
+}
+
+func (s *TcpMuxTransport) shouldProbeForExtraControl(remoteIP string) bool {
+	s.extraCtrlMu.Lock()
+	defer s.extraCtrlMu.Unlock()
+
+	if s.controlChannel == nil {
+		return true
+	}
+
+	primaryAddr, ok := s.controlChannel.RemoteAddr().(*net.TCPAddr)
+	if ok && primaryAddr.IP.String() == remoteIP {
+		return false
+	}
+
+	for _, extra := range s.extraCtrlConns {
+		if extraAddr, ok := extra.RemoteAddr().(*net.TCPAddr); ok && extraAddr.IP.String() == remoteIP {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (s *TcpMuxTransport) sendNewConnSignalRoundRobin() error {
