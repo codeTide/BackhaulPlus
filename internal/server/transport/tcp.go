@@ -44,6 +44,7 @@ type TcpConfig struct {
 	ChannelSize  int
 	WebPort      int
 	AcceptUDP    bool
+	AllowMultiIP bool
 }
 
 func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {
@@ -306,8 +307,8 @@ func (s *TcpTransport) acceptTunnelConn(listener net.Listener) {
 				continue
 			}
 
-			// Drop all suspicious packets from other address rather than server
-			if s.controlChannel != nil && s.controlChannel.RemoteAddr().(*net.TCPAddr).IP.String() != tcpConn.RemoteAddr().(*net.TCPAddr).IP.String() {
+			// Drop all suspicious packets from a different IP unless multi-IP is explicitly enabled.
+			if !s.config.AllowMultiIP && s.controlChannel != nil && s.controlChannel.RemoteAddr().(*net.TCPAddr).IP.String() != tcpConn.RemoteAddr().(*net.TCPAddr).IP.String() {
 				s.logger.Debugf("suspicious packet from %v. expected address: %v. discarding packet...", tcpConn.RemoteAddr().(*net.TCPAddr).IP.String(), s.controlChannel.RemoteAddr().(*net.TCPAddr).IP.String())
 				tcpConn.Close()
 				continue

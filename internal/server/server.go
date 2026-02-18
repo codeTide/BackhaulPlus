@@ -41,17 +41,18 @@ func (s *Server) Start() {
 
 	if s.config.Transport == config.TCP {
 		tcpConfig := &transport.TcpConfig{
-			BindAddr:    s.config.BindAddr,
-			Nodelay:     s.config.Nodelay,
-			KeepAlive:   time.Duration(s.config.Keepalive) * time.Second,
-			Heartbeat:   time.Duration(s.config.Heartbeat) * time.Second,
-			Token:       s.config.Token,
-			ChannelSize: s.config.ChannelSize,
-			Ports:       s.config.Ports,
-			Sniffer:     s.config.Sniffer,
-			WebPort:     s.config.WebPort,
-			SnifferLog:  s.config.SnifferLog,
-			AcceptUDP:   s.config.AcceptUDP,
+			BindAddr:     s.config.BindAddr,
+			Nodelay:      s.config.Nodelay,
+			KeepAlive:    time.Duration(s.config.Keepalive) * time.Second,
+			Heartbeat:    time.Duration(s.config.Heartbeat) * time.Second,
+			Token:        s.config.Token,
+			ChannelSize:  s.config.ChannelSize,
+			Ports:        s.config.Ports,
+			Sniffer:      s.config.Sniffer,
+			WebPort:      s.config.WebPort,
+			SnifferLog:   s.config.SnifferLog,
+			AcceptUDP:    s.config.AcceptUDP,
+			AllowMultiIP: s.config.AllowMultiIP,
 		}
 
 		tcpServer := transport.NewTCPServer(s.ctx, tcpConfig, s.logger)
@@ -74,6 +75,7 @@ func (s *Server) Start() {
 			Sniffer:          s.config.Sniffer,
 			WebPort:          s.config.WebPort,
 			SnifferLog:       s.config.SnifferLog,
+			AllowMultiIP:     s.config.AllowMultiIP,
 		}
 
 		tcpMuxServer := transport.NewTcpMuxServer(s.ctx, tcpMuxConfig, s.logger)
@@ -126,19 +128,20 @@ func (s *Server) Start() {
 
 	} else if s.config.Transport == config.QUIC {
 		quicConfig := &transport.QuicConfig{
-			BindAddr:    s.config.BindAddr,
-			Nodelay:     s.config.Nodelay,
-			KeepAlive:   time.Duration(s.config.Keepalive) * time.Second,
-			Heartbeat:   time.Duration(s.config.Heartbeat) * time.Second,
-			Token:       s.config.Token,
-			MuxCon:      s.config.MuxCon,
-			ChannelSize: s.config.ChannelSize,
-			Ports:       s.config.Ports,
-			Sniffer:     s.config.Sniffer,
-			WebPort:     s.config.WebPort,
-			SnifferLog:  s.config.SnifferLog,
-			TLSCertFile: s.config.TLSCertFile,
-			TLSKeyFile:  s.config.TLSKeyFile,
+			BindAddr:     s.config.BindAddr,
+			Nodelay:      s.config.Nodelay,
+			KeepAlive:    time.Duration(s.config.Keepalive) * time.Second,
+			Heartbeat:    time.Duration(s.config.Heartbeat) * time.Second,
+			Token:        s.config.Token,
+			MuxCon:       s.config.MuxCon,
+			ChannelSize:  s.config.ChannelSize,
+			Ports:        s.config.Ports,
+			Sniffer:      s.config.Sniffer,
+			WebPort:      s.config.WebPort,
+			SnifferLog:   s.config.SnifferLog,
+			TLSCertFile:  s.config.TLSCertFile,
+			TLSKeyFile:   s.config.TLSKeyFile,
+			AllowMultiIP: s.config.AllowMultiIP,
 		}
 
 		quicServer := transport.NewQuicServer(s.ctx, quicConfig, s.logger)

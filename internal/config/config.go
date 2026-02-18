@@ -20,6 +20,7 @@ type ServerConfig struct {
 	BindAddr         string        `toml:"bind_addr"`
 	Transport        TransportType `toml:"transport"`
 	Token            string        `toml:"token"`
+	AllowMultiIP     bool          `toml:"allow_multi_ip"`
 	Nodelay          bool          `toml:"nodelay"`
 	Keepalive        int           `toml:"keepalive_period"`
 	ChannelSize      int           `toml:"channel_size"`
