@@ -24,24 +24,26 @@ func validateServer(s *config.ServerConfig) error {
 		name = s.BindAddr
 	}
 
-	// Normalize SNI route keys: trim, lowercase, strip trailing dot.
+	// Normalize the sni_routes slice into a lookup map. SNI keys are trimmed,
+	// lowercased, and have a trailing dot removed. Any duplicate SNI after
+	// normalization is rejected.
 	if len(s.SNIRoutes) > 0 {
 		normalized := make(map[string]string, len(s.SNIRoutes))
-		for k, v := range s.SNIRoutes {
-			key := normalizeSNIHost(k)
+		for _, route := range s.SNIRoutes {
+			key := normalizeSNIHost(route.SNI)
 			if key == "" {
-				return fmt.Errorf("server %q: empty sni_routes key", name)
+				return fmt.Errorf("server %q: sni route is missing %q", name, "sni")
 			}
-			val := strings.TrimSpace(v)
+			val := strings.TrimSpace(route.Target)
 			if val == "" {
-				return fmt.Errorf("server %q: empty target for sni route %q", name, k)
+				return fmt.Errorf("server %q: sni route %q is missing %q", name, route.SNI, "target")
 			}
-			if existing, ok := normalized[key]; ok && existing != val {
-				return fmt.Errorf("server %q: duplicate sni route %q with conflicting targets", name, key)
+			if _, ok := normalized[key]; ok {
+				return fmt.Errorf("server %q: duplicate sni route after normalization: %q", name, key)
 			}
 			normalized[key] = val
 		}
-		s.SNIRoutes = normalized
+		s.SNIRouteMap = normalized
 	}
 
 	// Every server must expose some user-facing inbound.

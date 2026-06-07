@@ -123,7 +123,10 @@ To start using the solution, you'll need to configure both server and client com
     sni_listen_addr = "0.0.0.0:443"
     sni_inspect_timeout = 1
     sni_default_action = "reject"
-    sni_routes = { "myket.ir" = "10001", "cafebazaar.ir" = "10002" }
+    sni_routes = [
+      { sni = "myket.ir", target = "10001" },
+      { sni = "cafebazaar.ir", target = "10002" }
+    ]
     ```
 
    To start the `server`:
@@ -536,7 +539,7 @@ Configuration fields:
 | `sni_listen_addr` | Address the SNI router listens on (e.g. `0.0.0.0:443`). Required when `sni_router = true`. |
 | `sni_inspect_timeout` | Seconds allowed to read the ClientHello. Defaults to `1` if `<= 0`. |
 | `sni_default_action` | Action for unknown SNIs. Only `reject` is currently supported (default). |
-| `sni_routes` | Map of exact SNI host → virtual tunnel target. |
+| `sni_routes` | Array of `{ sni = "...", target = "..." }` rules mapping an exact SNI host to a virtual tunnel target. |
 
 Important notes:
 
@@ -568,11 +571,11 @@ sni_listen_addr = "0.0.0.0:443"
 sni_inspect_timeout = 1
 sni_default_action = "reject"
 
-sni_routes = {
-  "myket.ir" = "10001",
-  "cafebazaar.ir" = "10002",
-  "telewebion.ir" = "10003"
-}
+sni_routes = [
+  { sni = "myket.ir", target = "10001" },
+  { sni = "cafebazaar.ir", target = "10002" },
+  { sni = "telewebion.ir", target = "10003" }
+]
 ```
 
 Here the server listens only on `0.0.0.0:443`. A TLS connection with SNI
@@ -597,11 +600,11 @@ sni_listen_addr = "0.0.0.0:443"
 sni_inspect_timeout = 1
 sni_default_action = "reject"
 
-sni_routes = {
-  "myket.ir" = "10001",
-  "cafebazaar.ir" = "10002",
-  "telewebion.ir" = "10003"
-}
+sni_routes = [
+  { sni = "myket.ir", target = "10001" },
+  { sni = "cafebazaar.ir", target = "10002" },
+  { sni = "telewebion.ir", target = "10003" }
+]
 ```
 
 `raw_ports` handles real raw forwarding (20000–20100) while `sni_routes` routes

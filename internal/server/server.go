@@ -57,7 +57,7 @@ func (s *Server) Start() {
 			SNIListenAddr:     s.config.SNIListenAddr,
 			SNIInspectTimeout: time.Duration(s.config.SNIInspectTimeout) * time.Second,
 			SNIDefaultAction:  s.config.SNIDefaultAction,
-			SNIRoutes:         s.config.SNIRoutes,
+			SNIRoutes:         s.config.SNIRouteMap,
 		}
 
 		tcpServer := transport.NewTCPServer(s.ctx, tcpConfig, s.logger)
@@ -85,7 +85,7 @@ func (s *Server) Start() {
 			SNIListenAddr:     s.config.SNIListenAddr,
 			SNIInspectTimeout: time.Duration(s.config.SNIInspectTimeout) * time.Second,
 			SNIDefaultAction:  s.config.SNIDefaultAction,
-			SNIRoutes:         s.config.SNIRoutes,
+			SNIRoutes:         s.config.SNIRouteMap,
 		}
 
 		tcpMuxServer := transport.NewTcpMuxServer(s.ctx, tcpMuxConfig, s.logger)
@@ -110,7 +110,7 @@ func (s *Server) Start() {
 			SNIListenAddr:     s.config.SNIListenAddr,
 			SNIInspectTimeout: time.Duration(s.config.SNIInspectTimeout) * time.Second,
 			SNIDefaultAction:  s.config.SNIDefaultAction,
-			SNIRoutes:         s.config.SNIRoutes,
+			SNIRoutes:         s.config.SNIRouteMap,
 		}
 
 		wsServer := transport.NewWSServer(s.ctx, wsConfig, s.logger)
@@ -140,7 +140,7 @@ func (s *Server) Start() {
 			SNIListenAddr:     s.config.SNIListenAddr,
 			SNIInspectTimeout: time.Duration(s.config.SNIInspectTimeout) * time.Second,
 			SNIDefaultAction:  s.config.SNIDefaultAction,
-			SNIRoutes:         s.config.SNIRoutes,
+			SNIRoutes:         s.config.SNIRouteMap,
 		}
 
 		wsMuxServer := transport.NewWSMuxServer(s.ctx, wsMuxConfig, s.logger)
@@ -166,7 +166,7 @@ func (s *Server) Start() {
 			SNIListenAddr:     s.config.SNIListenAddr,
 			SNIInspectTimeout: time.Duration(s.config.SNIInspectTimeout) * time.Second,
 			SNIDefaultAction:  s.config.SNIDefaultAction,
-			SNIRoutes:         s.config.SNIRoutes,
+			SNIRoutes:         s.config.SNIRouteMap,
 		}
 
 		quicServer := transport.NewQuicServer(s.ctx, quicConfig, s.logger)

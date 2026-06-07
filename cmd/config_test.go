@@ -36,15 +36,23 @@ transport = "tcpmux"
 token = "QTRfs754a7"
 `
 
+// multiLineRoutes is the canonical multi-line sni_routes array form.
+const multiLineRoutes = `
+sni_routes = [
+  { sni = "myket.ir", target = "10001" },
+  { sni = "cafebazaar.ir", target = "10002" },
+  { sni = "telewebion.ir", target = "10003" }
+]
+`
+
 func TestConfig_SNIOnly_Valid(t *testing.T) {
 	content := baseServer + `
 sni_router = true
 sni_listen_addr = "0.0.0.0:443"
 sni_inspect_timeout = 2
 sni_default_action = "reject"
+` + multiLineRoutes
 
-sni_routes = { "myket.ir" = "10001", "cafebazaar.ir" = "10002" }
-`
 	cfg, err := loadConfig(writeTempConfig(t, content))
 	if err != nil {
 		t.Fatalf("loadConfig error: %v", err)
@@ -61,8 +69,13 @@ sni_routes = { "myket.ir" = "10001", "cafebazaar.ir" = "10002" }
 	if s.SNIInspectTimeout != 2 {
 		t.Fatalf("expected sni_inspect_timeout 2, got %d", s.SNIInspectTimeout)
 	}
-	if s.SNIRoutes["myket.ir"] != "10001" || s.SNIRoutes["cafebazaar.ir"] != "10002" {
-		t.Fatalf("sni_routes not parsed correctly: %+v", s.SNIRoutes)
+	if len(s.SNIRoutes) != 3 {
+		t.Fatalf("expected 3 sni_routes entries, got %d", len(s.SNIRoutes))
+	}
+	if s.SNIRouteMap["myket.ir"] != "10001" ||
+		s.SNIRouteMap["cafebazaar.ir"] != "10002" ||
+		s.SNIRouteMap["telewebion.ir"] != "10003" {
+		t.Fatalf("sni route map not built correctly: %+v", s.SNIRouteMap)
 	}
 }
 
@@ -83,6 +96,34 @@ raw_ports = ["20000-20100"]
 	}
 }
 
+func TestConfig_MixedRawAndSNI(t *testing.T) {
+	content := baseServer + `
+raw_ports = [
+  "20000-20100"
+]
+
+sni_router = true
+sni_listen_addr = "0.0.0.0:443"
+sni_inspect_timeout = 1
+sni_default_action = "reject"
+` + multiLineRoutes
+
+	cfg, err := loadConfig(writeTempConfig(t, content))
+	if err != nil {
+		t.Fatalf("loadConfig error: %v", err)
+	}
+	applyDefaults(cfg)
+	if err := validateConfig(cfg); err != nil {
+		t.Fatalf("expected mixed raw_ports + sni_router to be valid, got: %v", err)
+	}
+	if len(cfg.Servers[0].RawPorts) != 1 {
+		t.Fatalf("raw_ports not parsed in mixed mode: %+v", cfg.Servers[0].RawPorts)
+	}
+	if len(cfg.Servers[0].SNIRouteMap) != 3 {
+		t.Fatalf("sni route map not built in mixed mode: %+v", cfg.Servers[0].SNIRouteMap)
+	}
+}
+
 func TestConfig_LegacyPortsRejected(t *testing.T) {
 	content := baseServer + `
 ports = ["443-600"]
@@ -97,8 +138,7 @@ ports = ["443-600"]
 }
 
 func TestConfig_NoInboundRejected(t *testing.T) {
-	err := loadAndValidate(t, baseServer)
-	if err == nil {
+	if err := loadAndValidate(t, baseServer); err == nil {
 		t.Fatal("expected error when neither raw_ports nor sni_router is set")
 	}
 }
@@ -113,10 +153,21 @@ sni_listen_addr = "0.0.0.0:443"
 	}
 }
 
+func TestConfig_SNIRouterWithEmptyRouteList(t *testing.T) {
+	content := baseServer + `
+sni_router = true
+sni_listen_addr = "0.0.0.0:443"
+sni_routes = []
+`
+	if err := loadAndValidate(t, content); err == nil {
+		t.Fatal("expected error for sni_router with empty sni_routes list")
+	}
+}
+
 func TestConfig_SNIRouterWithoutListenAddr(t *testing.T) {
 	content := baseServer + `
 sni_router = true
-sni_routes = { "myket.ir" = "10001" }
+sni_routes = [ { sni = "myket.ir", target = "10001" } ]
 `
 	if err := loadAndValidate(t, content); err == nil {
 		t.Fatal("expected error for sni_router without sni_listen_addr")
@@ -127,7 +178,7 @@ func TestConfig_SNIInspectTimeoutDefault(t *testing.T) {
 	content := baseServer + `
 sni_router = true
 sni_listen_addr = "0.0.0.0:443"
-sni_routes = { "myket.ir" = "10001" }
+sni_routes = [ { sni = "myket.ir", target = "10001" } ]
 `
 	cfg, err := loadConfig(writeTempConfig(t, content))
 	if err != nil {
@@ -145,11 +196,11 @@ sni_routes = { "myket.ir" = "10001" }
 	}
 }
 
-func TestConfig_SNIRouteKeysNormalized(t *testing.T) {
+func TestConfig_SNIRouteNormalized(t *testing.T) {
 	content := baseServer + `
 sni_router = true
 sni_listen_addr = "0.0.0.0:443"
-sni_routes = { "  MyKeT.IR.  " = "10001" }
+sni_routes = [ { sni = "  MyKeT.IR.  ", target = "10001" } ]
 `
 	cfg, err := loadConfig(writeTempConfig(t, content))
 	if err != nil {
@@ -159,8 +210,44 @@ sni_routes = { "  MyKeT.IR.  " = "10001" }
 	if err := validateConfig(cfg); err != nil {
 		t.Fatalf("validateConfig error: %v", err)
 	}
-	if _, ok := cfg.Servers[0].SNIRoutes["myket.ir"]; !ok {
-		t.Fatalf("expected normalized key 'myket.ir', got %+v", cfg.Servers[0].SNIRoutes)
+	if _, ok := cfg.Servers[0].SNIRouteMap["myket.ir"]; !ok {
+		t.Fatalf("expected normalized key 'myket.ir', got %+v", cfg.Servers[0].SNIRouteMap)
+	}
+}
+
+func TestConfig_DuplicateNormalizedSNIRejected(t *testing.T) {
+	content := baseServer + `
+sni_router = true
+sni_listen_addr = "0.0.0.0:443"
+sni_routes = [
+  { sni = "Myket.ir", target = "10001" },
+  { sni = "myket.ir.", target = "10002" }
+]
+`
+	if err := loadAndValidate(t, content); err == nil {
+		t.Fatal("expected error for duplicate SNI after normalization")
+	}
+}
+
+func TestConfig_RouteMissingSNIRejected(t *testing.T) {
+	content := baseServer + `
+sni_router = true
+sni_listen_addr = "0.0.0.0:443"
+sni_routes = [ { target = "10001" } ]
+`
+	if err := loadAndValidate(t, content); err == nil {
+		t.Fatal("expected error for sni route missing 'sni'")
+	}
+}
+
+func TestConfig_RouteMissingTargetRejected(t *testing.T) {
+	content := baseServer + `
+sni_router = true
+sni_listen_addr = "0.0.0.0:443"
+sni_routes = [ { sni = "myket.ir" } ]
+`
+	if err := loadAndValidate(t, content); err == nil {
+		t.Fatal("expected error for sni route missing 'target'")
 	}
 }
 
@@ -169,7 +256,7 @@ func TestConfig_UnsupportedDefaultAction(t *testing.T) {
 sni_router = true
 sni_listen_addr = "0.0.0.0:443"
 sni_default_action = "accept"
-sni_routes = { "myket.ir" = "10001" }
+sni_routes = [ { sni = "myket.ir", target = "10001" } ]
 `
 	if err := loadAndValidate(t, content); err == nil {
 		t.Fatal("expected error for unsupported sni_default_action")
@@ -185,21 +272,9 @@ transport = "udp"
 token = "x"
 sni_router = true
 sni_listen_addr = "0.0.0.0:443"
-sni_routes = { "myket.ir" = "10001" }
+sni_routes = [ { sni = "myket.ir", target = "10001" } ]
 `
 	if err := loadAndValidate(t, content); err == nil {
 		t.Fatal("expected error for udp transport with sni_router")
-	}
-}
-
-func TestConfig_MixedRawAndSNI(t *testing.T) {
-	content := baseServer + `
-raw_ports = ["20000-20100"]
-sni_router = true
-sni_listen_addr = "0.0.0.0:443"
-sni_routes = { "myket.ir" = "10001" }
-`
-	if err := loadAndValidate(t, content); err != nil {
-		t.Fatalf("expected mixed raw_ports + sni_router to be valid, got: %v", err)
 	}
 }
