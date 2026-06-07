@@ -35,7 +35,7 @@ type UdpConfig struct {
 	Token        string
 	SnifferLog   string
 	TunnelStatus string
-	Ports        []string
+	RawPorts     []string
 	Sniffer      bool
 	Heartbeat    time.Duration // in seconds, for udp conn and control channel
 	ChannelSize  int
@@ -366,7 +366,7 @@ func (s *UdpTransport) acceptTunnelConn(listener *net.UDPConn) {
 }
 
 func (s *UdpTransport) parsePortMappings() {
-	for _, portMapping := range s.config.Ports {
+	for _, portMapping := range s.config.RawPorts {
 		parts := strings.Split(portMapping, "=")
 
 		var localAddr, remoteAddr string

@@ -25,7 +25,7 @@ type ServerConfig struct {
 	Keepalive        int           `toml:"keepalive_period"`
 	ChannelSize      int           `toml:"channel_size"`
 	LogLevel         string        `toml:"log_level"`
-	Ports            []string      `toml:"ports"`
+	RawPorts         []string      `toml:"raw_ports"`
 	PPROF            bool          `toml:"pprof"`
 	MuxSession       int           `toml:"mux_session"`
 	MuxVersion       int           `toml:"mux_version"`
@@ -40,6 +40,31 @@ type ServerConfig struct {
 	Heartbeat        int           `toml:"heartbeat"`
 	MuxCon           int           `toml:"mux_con"`
 	AcceptUDP        bool          `toml:"accept_udp"`
+
+	// SNI-based internal TCP routing. When enabled, the server listens on
+	// SNIListenAddr, reads the TLS ClientHello (without terminating TLS) and
+	// routes the connection into the tunnel based on the SNI value. The route
+	// targets are virtual tunnel targets and do not need a matching raw_ports
+	// listener.
+	SNIRouter         bool             `toml:"sni_router"`
+	SNIListenAddr     string           `toml:"sni_listen_addr"`
+	SNIInspectTimeout int              `toml:"sni_inspect_timeout"`
+	SNIDefaultAction  string           `toml:"sni_default_action"`
+	SNIRoutes         []SNIRouteConfig `toml:"sni_routes"`
+	// SNIRouteMap is the normalized (lowercase, trimmed) SNI -> target lookup
+	// table derived from SNIRoutes during validation. It is not read from TOML.
+	SNIRouteMap map[string]string `toml:"-"`
+}
+
+// SNIRouteConfig is a single SNI routing rule, expressed in TOML as an inline
+// table inside the sni_routes array:
+//
+//	sni_routes = [
+//	  { sni = "myket.ir", target = "10001" },
+//	]
+type SNIRouteConfig struct {
+	SNI    string `toml:"sni"`
+	Target string `toml:"target"`
 }
 
 // ClientConfig represents the configuration for the client.

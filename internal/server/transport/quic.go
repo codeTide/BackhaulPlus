@@ -39,7 +39,7 @@ type QuicConfig struct {
 	TunnelStatus string
 	SnifferLog   string
 	Token        string
-	Ports        []string
+	RawPorts     []string
 	Nodelay      bool
 	Sniffer      bool
 	ChannelSize  int
@@ -50,6 +50,12 @@ type QuicConfig struct {
 	TLSCertFile  string        // Path to the TLS certificate file
 	TLSKeyFile   string        // Path to the TLS key file
 	AllowMultiIP bool
+
+	SNIRouter         bool
+	SNIListenAddr     string
+	SNIInspectTimeout time.Duration
+	SNIDefaultAction  string
+	SNIRoutes         map[string]string
 }
 
 func NewQuicServer(parentCtx context.Context, config *QuicConfig, logger *logrus.Logger) *QuicTransport {
@@ -214,8 +220,29 @@ func (s *QuicTransport) keepalive() {
 	}
 }
 
+// startSNIRouter starts the transport-agnostic SNI router for this transport.
+func (s *QuicTransport) startSNIRouter() {
+	StartSNIRouter(s.ctx, SNIRouterConfig{
+		ListenAddr:     s.config.SNIListenAddr,
+		InspectTimeout: s.config.SNIInspectTimeout,
+		DefaultAction:  s.config.SNIDefaultAction,
+		Routes:         s.config.SNIRoutes,
+	}, s.logger, s.enqueueInbound)
+}
+
+// enqueueInbound delivers an inbound connection into the local pipeline,
+// mirroring acceptLocalCon. Returns false if the local channel is full.
+func (s *QuicTransport) enqueueInbound(conn net.Conn, target string, reportPort int) bool {
+	select {
+	case s.localChan <- LocalTCPConn{conn: conn, remoteAddr: target, timeCreated: time.Now().UnixMilli(), reportPort: reportPort}:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *QuicTransport) portConfigReader() {
-	for _, portMapping := range s.config.Ports {
+	for _, portMapping := range s.config.RawPorts {
 		var localAddr string
 		parts := strings.Split(portMapping, "=")
 		if len(parts) < 2 {
@@ -293,6 +320,10 @@ func (s *QuicTransport) channelHandshake(qConn quic.Connection) {
 	if s.coldStart {
 		go s.portConfigReader()
 		go s.handleTunConn()
+
+		if s.config.SNIRouter {
+			go s.startSNIRouter()
+		}
 	}
 	go s.keepalive()
 
@@ -438,11 +469,9 @@ func (s *QuicTransport) acceptLocalCon(listener net.Listener, remoteAddr string)
 			tcpConn.SetKeepAlive(true)
 			tcpConn.SetKeepAlivePeriod(s.config.KeepAlive)
 
-			select {
-			case s.localChan <- LocalTCPConn{conn: conn, remoteAddr: remoteAddr}:
+			if s.enqueueInbound(conn, remoteAddr, 0) {
 				s.logger.Debugf("accepted incoming TCP connection from %s", tcpConn.RemoteAddr().String())
-
-			default: // channel is full, discard the connection
+			} else { // channel is full, discard the connection
 				s.logger.Warnf("local listener channel is full, discarding TCP connection from %s", tcpConn.LocalAddr().String())
 				tcpConn.Close()
 			}
@@ -503,7 +532,7 @@ func (s *QuicTransport) handleSession(session quic.Connection, next chan struct{
 
 			// Handle data exchange between connections
 			go func() {
-				utils.QConnectionHandler(incomingConn.conn, stream, s.logger, s.usageMonitor, incomingConn.conn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffer)
+				utils.QConnectionHandler(incomingConn.conn, stream, s.logger, s.usageMonitor, incomingConn.usagePort(), s.config.Sniffer)
 				done <- struct{}{}
 			}()
 

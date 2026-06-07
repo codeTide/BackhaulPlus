@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -47,7 +46,7 @@ type TcpMuxConfig struct {
 	TunnelStatus     string
 	SnifferLog       string
 	Token            string
-	Ports            []string
+	RawPorts         []string
 	Nodelay          bool
 	Sniffer          bool
 	ChannelSize      int
@@ -60,6 +59,12 @@ type TcpMuxConfig struct {
 	KeepAlive        time.Duration
 	Heartbeat        time.Duration // in seconds
 	AllowMultiIP     bool
+
+	SNIRouter         bool
+	SNIListenAddr     string
+	SNIInspectTimeout time.Duration
+	SNIDefaultAction  string
+	SNIRoutes         map[string]string
 }
 
 func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -116,6 +121,10 @@ func (s *TcpMuxTransport) Start() {
 
 		go s.parsePortMappings()
 		go s.channelHandler()
+
+		if s.config.SNIRouter {
+			go s.startSNIRouter()
+		}
 
 		s.logger.Infof("starting %d handle loops on each CPU thread", numCPU)
 
@@ -396,15 +405,6 @@ func (s *TcpMuxTransport) acceptTunnelConn(listener net.Listener) {
 
 }
 
-type prefixedConn struct {
-	net.Conn
-	r io.Reader
-}
-
-func (p *prefixedConn) Read(b []byte) (int, error) {
-	return p.r.Read(b)
-}
-
 func (s *TcpMuxTransport) tryPromoteExtraControlChannel(conn net.Conn) (bool, net.Conn) {
 	const maxTokenLen = 512
 
@@ -417,22 +417,22 @@ func (s *TcpMuxTransport) tryPromoteExtraControlChannel(conn net.Conn) (bool, ne
 	n, err := io.ReadFull(conn, header)
 	if err != nil {
 		_ = conn.SetReadDeadline(time.Time{})
-		return false, &prefixedConn{Conn: conn, r: io.MultiReader(bytes.NewReader(header[:n]), conn)}
+		return false, NewPrefixedConn(conn, append([]byte(nil), header[:n]...))
 	}
 
 	msgLen := int(binary.BigEndian.Uint16(header[:2]))
 	transport := header[2]
 	if transport != utils.SG_Chan || msgLen < 1 || msgLen > maxTokenLen {
 		_ = conn.SetReadDeadline(time.Time{})
-		return false, &prefixedConn{Conn: conn, r: io.MultiReader(bytes.NewReader(header), conn)}
+		return false, NewPrefixedConn(conn, append([]byte(nil), header...))
 	}
 
 	body := make([]byte, msgLen)
 	n, err = io.ReadFull(conn, body)
 	if err != nil {
 		_ = conn.SetReadDeadline(time.Time{})
-		fallback := io.MultiReader(bytes.NewReader(header), bytes.NewReader(body[:n]), conn)
-		return false, &prefixedConn{Conn: conn, r: fallback}
+		prefix := append(append([]byte(nil), header...), body[:n]...)
+		return false, NewPrefixedConn(conn, prefix)
 	}
 	_ = conn.SetReadDeadline(time.Time{})
 
@@ -545,8 +545,40 @@ func (s *TcpMuxTransport) broadcastHeartbeat() error {
 	return nil
 }
 
+// startSNIRouter starts the transport-agnostic SNI router for this transport.
+func (s *TcpMuxTransport) startSNIRouter() {
+	StartSNIRouter(s.ctx, SNIRouterConfig{
+		ListenAddr:     s.config.SNIListenAddr,
+		InspectTimeout: s.config.SNIInspectTimeout,
+		DefaultAction:  s.config.SNIDefaultAction,
+		Routes:         s.config.SNIRoutes,
+	}, s.logger, s.enqueueInbound)
+}
+
+// enqueueInbound delivers an inbound connection into the local pipeline,
+// mirroring acceptLocalConn so raw_ports and the SNI router share the handoff
+// path. Returns false if the local channel is full.
+func (s *TcpMuxTransport) enqueueInbound(conn net.Conn, target string, reportPort int) bool {
+	select {
+	case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: target, timeCreated: time.Now().UnixMilli(), reportPort: reportPort}:
+		// +1 for stream counter
+		atomic.AddInt32(&s.streamCounter, 1)
+
+		if atomic.LoadInt32(&s.streamCounter) >= atomic.LoadInt32(&s.sessionCounter)*int32(s.config.MuxCon) {
+			select { // Attempt to request a new connection
+			case s.reqNewConnChan <- struct{}{}:
+			default:
+				s.logger.Warn("failed to request new connection. channel is full")
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *TcpMuxTransport) parsePortMappings() {
-	for _, portMapping := range s.config.Ports {
+	for _, portMapping := range s.config.RawPorts {
 		parts := strings.Split(portMapping, "=")
 
 		var localAddr, remoteAddr string
@@ -682,24 +714,9 @@ func (s *TcpMuxTransport) acceptLocalConn(listener net.Listener, remoteAddr stri
 				}
 			}
 
-			select {
-			case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: remoteAddr, timeCreated: time.Now().UnixMilli()}:
+			if s.enqueueInbound(conn, remoteAddr, 0) {
 				s.logger.Debugf("accepted incoming TCP connection from %s", tcpConn.RemoteAddr().String())
-
-				// +1 for stream counter
-				atomic.AddInt32(&s.streamCounter, 1)
-
-				if atomic.LoadInt32(&s.streamCounter) >= atomic.LoadInt32(&s.sessionCounter)*int32(s.config.MuxCon) {
-					s.logger.Tracef("stream counter: %v, session counter: %v", atomic.LoadInt32(&s.streamCounter), atomic.LoadInt32(&s.sessionCounter))
-
-					select { // Attempt to request a new connection
-					case s.reqNewConnChan <- struct{}{}:
-					default:
-						s.logger.Warn("failed to request new connection. channel is full")
-					}
-				}
-
-			default: // channel is full, discard the connection
+			} else { // channel is full, discard the connection
 				s.logger.Warnf("local listener channel is full, discarding TCP connection from %s", tcpConn.LocalAddr().String())
 				conn.Close()
 			}
@@ -764,7 +781,7 @@ func (s *TcpMuxTransport) handleSession(session *smux.Session) {
 
 			// Handle data exchange between connections
 			go func() {
-				utils.TCPConnectionHandler(stream, incomingConn.conn, s.logger, s.usageMonitor, incomingConn.conn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffer)
+				utils.TCPConnectionHandler(stream, incomingConn.conn, s.logger, s.usageMonitor, incomingConn.usagePort(), s.config.Sniffer)
 				atomic.AddInt32(&s.streamCounter, -1)
 				<-counter // read signal from the channel
 			}()

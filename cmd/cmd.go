@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/codeTide/BackhaulPlus/internal/client"
 	"github.com/codeTide/BackhaulPlus/internal/config"
@@ -24,6 +25,11 @@ func Run(configPath string, ctx context.Context) {
 
 	// Apply default values to the configuration
 	applyDefaults(cfg)
+
+	// Validate the configuration (also normalizes SNI routes)
+	if err := validateConfig(cfg); err != nil {
+		logger.Fatalf("invalid configuration: %v", err)
+	}
 
 	// Determine whether to run as a server or client
 	switch {
@@ -68,8 +74,19 @@ func Run(configPath string, ctx context.Context) {
 // loadConfig loads and parses the TOML configuration file.
 func loadConfig(configPath string) (*config.Config, error) {
 	var cfg config.Config
-	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+	md, err := toml.DecodeFile(configPath, &cfg)
+	if err != nil {
 		return &cfg, err
 	}
+
+	// The legacy "ports" field has been removed in favour of "raw_ports".
+	// Detect leftover usage so old configs fail loudly instead of being
+	// silently ignored.
+	for _, key := range md.Undecoded() {
+		if len(key) > 0 && key[len(key)-1] == "ports" {
+			return &cfg, fmt.Errorf("field \"ports\" has been removed; use \"raw_ports\" instead")
+		}
+	}
+
 	return &cfg, nil
 }

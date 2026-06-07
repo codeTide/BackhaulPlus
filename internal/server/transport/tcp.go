@@ -36,7 +36,7 @@ type TcpConfig struct {
 	Token        string
 	SnifferLog   string
 	TunnelStatus string
-	Ports        []string
+	RawPorts     []string
 	Nodelay      bool
 	Sniffer      bool
 	KeepAlive    time.Duration
@@ -45,6 +45,12 @@ type TcpConfig struct {
 	WebPort      int
 	AcceptUDP    bool
 	AllowMultiIP bool
+
+	SNIRouter         bool
+	SNIListenAddr     string
+	SNIInspectTimeout time.Duration
+	SNIDefaultAction  string
+	SNIRoutes         map[string]string
 }
 
 func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {
@@ -90,6 +96,10 @@ func (s *TcpTransport) Start() {
 
 		go s.parsePortMappings()
 		go s.channelHandler()
+
+		if s.config.SNIRouter {
+			go s.startSNIRouter()
+		}
 
 		s.logger.Infof("starting %d handle loops on each CPU thread", numCPU)
 
@@ -343,8 +353,36 @@ func (s *TcpTransport) acceptTunnelConn(listener net.Listener) {
 	}
 }
 
+// startSNIRouter starts the transport-agnostic SNI router, feeding routed
+// connections into this transport's local pipeline via enqueueInbound.
+func (s *TcpTransport) startSNIRouter() {
+	StartSNIRouter(s.ctx, SNIRouterConfig{
+		ListenAddr:     s.config.SNIListenAddr,
+		InspectTimeout: s.config.SNIInspectTimeout,
+		DefaultAction:  s.config.SNIDefaultAction,
+		Routes:         s.config.SNIRoutes,
+	}, s.logger, s.enqueueInbound)
+}
+
+// enqueueInbound delivers an inbound connection into the local pipeline. It
+// mirrors the behaviour of acceptLocalConn so raw_ports and the SNI router
+// share the same handoff path. Returns false if the channel is full.
+func (s *TcpTransport) enqueueInbound(conn net.Conn, target string, reportPort int) bool {
+	select {
+	case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: target, timeCreated: time.Now().UnixMilli(), reportPort: reportPort}:
+		select {
+		case s.reqNewConnChan <- struct{}{}:
+		default:
+			s.logger.Warn("channel is full, cannot request a new connection")
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *TcpTransport) parsePortMappings() {
-	for _, portMapping := range s.config.Ports {
+	for _, portMapping := range s.config.RawPorts {
 		parts := strings.Split(portMapping, "=")
 
 		var localAddr, remoteAddr string
@@ -493,20 +531,9 @@ func (s *TcpTransport) acceptLocalConn(listener net.Listener, remoteAddr string)
 				}
 			}
 
-			select {
-			case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: remoteAddr, timeCreated: time.Now().UnixMilli()}:
-
-				select {
-				case s.reqNewConnChan <- struct{}{}:
-					// Successfully requested a new connection
-				default:
-					// The channel is full, do nothing
-					s.logger.Warn("channel is full, cannot request a new connection")
-				}
-
+			if s.enqueueInbound(conn, remoteAddr, 0) {
 				s.logger.Debugf("accepted incoming TCP connection from %s", tcpConn.RemoteAddr().String())
-
-			default: // channel is full, discard the connection
+			} else { // channel is full, discard the connection
 				s.logger.Warnf("channel with listener %s is full, discarding TCP connection from %s", listener.Addr().String(), tcpConn.LocalAddr().String())
 				conn.Close()
 			}
@@ -541,7 +568,7 @@ func (s *TcpTransport) handleLoop() {
 					}
 
 					// Handle data exchange between connections
-					go utils.TCPConnectionHandler(localConn.conn, tunnelConn, s.logger, s.usageMonitor, localConn.conn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffer)
+					go utils.TCPConnectionHandler(localConn.conn, tunnelConn, s.logger, s.usageMonitor, localConn.usagePort(), s.config.Sniffer)
 					break loop
 
 				}
