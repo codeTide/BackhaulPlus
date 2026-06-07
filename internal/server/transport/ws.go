@@ -40,7 +40,7 @@ type WsConfig struct {
 	TLSKeyFile   string // Path to the TLS key file
 	TunnelStatus string
 	Token        string
-	Ports        []string
+	RawPorts     []string
 	Nodelay      bool
 	Sniffer      bool
 	KeepAlive    time.Duration
@@ -49,6 +49,11 @@ type WsConfig struct {
 	WebPort      int
 	Mode         config.TransportType // ws or wss
 
+	SNIRouter         bool
+	SNIListenAddr     string
+	SNIInspectTimeout time.Duration
+	SNIDefaultAction  string
+	SNIRoutes         map[string]string
 }
 
 func NewWSServer(parentCtx context.Context, config *WsConfig, logger *logrus.Logger) *WsTransport {
@@ -251,6 +256,10 @@ func (s *WsTransport) tunnelListener() {
 				go s.channelHandler()
 				go s.parsePortMappings()
 
+				if s.config.SNIRouter {
+					go s.startSNIRouter()
+				}
+
 				s.logger.Infof("starting %d handle loops on each CPU thread", numCPU)
 
 				for i := 0; i < numCPU; i++ {
@@ -313,8 +322,34 @@ func (s *WsTransport) tunnelListener() {
 
 }
 
+// startSNIRouter starts the transport-agnostic SNI router for this transport.
+func (s *WsTransport) startSNIRouter() {
+	StartSNIRouter(s.ctx, SNIRouterConfig{
+		ListenAddr:     s.config.SNIListenAddr,
+		InspectTimeout: s.config.SNIInspectTimeout,
+		DefaultAction:  s.config.SNIDefaultAction,
+		Routes:         s.config.SNIRoutes,
+	}, s.logger, s.enqueueInbound)
+}
+
+// enqueueInbound delivers an inbound connection into the local pipeline,
+// mirroring acceptLocalConn. Returns false if the local channel is full.
+func (s *WsTransport) enqueueInbound(conn net.Conn, target string, reportPort int) bool {
+	select {
+	case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: target, timeCreated: time.Now().UnixMilli(), reportPort: reportPort}:
+		select {
+		case s.reqNewConnChan <- struct{}{}:
+		default:
+			s.logger.Warn("channel is full, cannot request a new connection")
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *WsTransport) parsePortMappings() {
-	for _, portMapping := range s.config.Ports {
+	for _, portMapping := range s.config.RawPorts {
 		parts := strings.Split(portMapping, "=")
 
 		var localAddr, remoteAddr string
@@ -462,20 +497,9 @@ func (s *WsTransport) acceptLocalConn(listener net.Listener, remoteAddr string) 
 				s.logger.Warnf("failed to set TCP keep-alive period for %s: %v", tcpConn.RemoteAddr().String(), err)
 			}
 
-			select {
-			case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: remoteAddr, timeCreated: time.Now().UnixMilli()}:
-
-				select {
-				case s.reqNewConnChan <- struct{}{}:
-					// Successfully requested a new connection
-				default:
-					// The channel is full, do nothing
-					s.logger.Warn("channel is full, cannot request a new connection")
-				}
-
+			if s.enqueueInbound(conn, remoteAddr, 0) {
 				s.logger.Debugf("accepted incoming TCP connection from %s", tcpConn.RemoteAddr().String())
-
-			default: // channel is full, discard the connection
+			} else { // channel is full, discard the connection
 				s.logger.Warnf("channel with listener %s is full, discarding TCP connection from %s", listener.Addr().String(), tcpConn.LocalAddr().String())
 				conn.Close()
 			}
@@ -509,7 +533,7 @@ func (s *WsTransport) handleLoop() {
 						continue loop
 					}
 					// Handle data exchange between connections
-					go utils.WSConnectionHandler(tunnelConnection.conn, localConn.conn, s.logger, s.usageMonitor, localConn.conn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffer)
+					go utils.WSConnectionHandler(tunnelConnection.conn, localConn.conn, s.logger, s.usageMonitor, localConn.usagePort(), s.config.Sniffer)
 					break loop
 				}
 			}

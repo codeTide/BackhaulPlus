@@ -19,12 +19,13 @@ Welcome to the **`BackhaulPlus`** project! This project is an enhanced fork of B
       - [Secure WebSocket Configuration](#secure-websocket-configuration)
       - [WS Multiplexing Configuration](#ws-multiplexing-configuration)
       - [WSS Multiplexing Configuration](#wss-multiplexing-configuration)
-5. [Generating a Self-Signed TLS Certificate with OpenSSL](#generating-a-self-signed-tls-certificate-with-openssl)
-6. [Running BackhaulPlus as a service](#running-backhaulplus-as-a-service)
-7. [FAQ](#faq)
-8. [Benchmark](#benchmark)
-9. [License](#license)
-10. [Donation](#donation)
+5. [Raw Ports vs. SNI-based Routing](#raw-ports-vs-sni-based-routing)
+6. [Generating a Self-Signed TLS Certificate with OpenSSL](#generating-a-self-signed-tls-certificate-with-openssl)
+7. [Running BackhaulPlus as a service](#running-backhaulplus-as-a-service)
+8. [FAQ](#faq)
+9. [Benchmark](#benchmark)
+10. [License](#license)
+11. [Donation](#donation)
 
 ---
 
@@ -104,7 +105,8 @@ To start using the solution, you'll need to configure both server and client com
     tls_key = "/root/server.key"  # Path to the TLS private key file for wss/wssmux. (mandatory for wss/wssmux).
     log_level = "info"            # Log level ("panic", "fatal", "error", "warn", "info", "debug", "trace", optional, default: "info").
 
-    ports = [
+    # NOTE: the old `ports` field has been removed. Use `raw_ports` instead.
+    raw_ports = [
       "443-600",                  # Listen on all ports in the range 443 to 600
       "443-600:5201",             # Listen on all ports in the range 443 to 600 and forward traffic to 5201
       "443-600=1.1.1.1:5201",     # Listen on all ports in the range 443 to 600 and forward traffic to 1.1.1.1:5201
@@ -114,6 +116,14 @@ To start using the solution, you'll need to configure both server and client com
       "443=1.1.1.1:5201",         # Listen on local port 443 and forward to a specific remote IP (1.1.1.1) on port 5201.
       "127.0.0.2:443=1.1.1.1:5201" # Bind to specific local IP (127.0.0.2), listen on port 443, and forward to remote IP (1.1.1.1) on port 5201.
     ]
+
+    # SNI-based internal TCP routing (optional). See the "SNI-based Routing"
+    # section below for details.
+    sni_router = false
+    sni_listen_addr = "0.0.0.0:443"
+    sni_inspect_timeout = 1
+    sni_default_action = "reject"
+    sni_routes = { "myket.ir" = "10001", "cafebazaar.ir" = "10002" }
     ```
 
    To start the `server`:
@@ -174,7 +184,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   ports = []
+   raw_ports = []
    ```
 * **Client**:
 
@@ -230,7 +240,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   ports = []
+   raw_ports = []
    ```
 * **Client**:
 
@@ -277,7 +287,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   ports = []
+   raw_ports = []
    ```
 * **Client**:
 
@@ -312,7 +322,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   ports = []
+   raw_ports = []
    ```
 
 * **Client**:
@@ -356,7 +366,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   ports = []
+   raw_ports = []
    ```
 
 * **Client**:
@@ -405,7 +415,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   ports = []
+   raw_ports = []
    ```
 * **Client**:
 
@@ -454,7 +464,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   ports = []
+   raw_ports = []
    ```
 * **Client**:
 
@@ -481,6 +491,143 @@ To start using the solution, you'll need to configure both server and client com
    ```
 
 
+
+## Raw Ports vs. SNI-based Routing
+
+BackhaulPlus exposes two independent ways to accept user-facing inbound traffic
+on a server. They can be used separately or together.
+
+### `raw_ports`
+
+> The legacy `ports` field has been **removed**. Use `raw_ports` instead. If a
+> configuration still contains `ports`, BackhaulPlus fails fast with:
+> `field "ports" has been removed; use "raw_ports" instead`.
+
+`raw_ports` is a list of ports that the BackhaulPlus server actually listens on
+and forwards (raw TCP/UDP) into the tunnel. It accepts the same formats the old
+`ports` field did:
+
+```toml
+raw_ports = [
+  "20000-20100"               # Listen on every port in 20000..20100, forward each to the same remote port
+]
+```
+
+### `sni_router`
+
+`sni_router` enables an internal SNI-based TCP router. It is a TCP listener that
+reads the TLS **ClientHello** of each incoming connection **without terminating
+TLS** (no certificate is required, no traffic is decrypted) and routes the
+connection into the tunnel based on the SNI value. The inspected ClientHello
+bytes are preserved and replayed to the destination, so TLS/REALITY/XHTTP
+handshakes keep working end-to-end.
+
+This removes the need for an extra HAProxy/Nginx `stream` hop in front of
+BackhaulPlus: there is **no internal `127.0.0.1:10001` dial**, no extra loopback
+hop, and no second socket pair — the same accepted connection is fed directly
+into the tunnel transport, exactly like raw port forwarding, but without a real
+raw listener for that route.
+
+Configuration fields:
+
+| Field | Meaning |
+| --- | --- |
+| `sni_router` | Enable the SNI router (`true`/`false`, default `false`). |
+| `sni_listen_addr` | Address the SNI router listens on (e.g. `0.0.0.0:443`). Required when `sni_router = true`. |
+| `sni_inspect_timeout` | Seconds allowed to read the ClientHello. Defaults to `1` if `<= 0`. |
+| `sni_default_action` | Action for unknown SNIs. Only `reject` is currently supported (default). |
+| `sni_routes` | Map of exact SNI host → virtual tunnel target. |
+
+Important notes:
+
+* The targets inside `sni_routes` (e.g. `"10001"`) are **virtual tunnel
+  targets**. They are sent to the client unchanged and do **not** need a matching
+  entry in `raw_ports`. No listener is opened on the server for those ports.
+* The client/middle side does not know whether a connection arrived via
+  `raw_ports` or `sni_routes`; it receives the same target string and connects
+  to its destination with its existing logic.
+* SNI keys are normalized (trimmed, lowercased, trailing dot removed) and matched
+  case-insensitively. Only exact matches are supported (no wildcards/regex yet).
+* If an SNI does not match any route and `sni_default_action = "reject"`, the
+  connection is closed.
+* Per-route traffic in the usage monitor is reported using the target port
+  (e.g. `myket.ir → 10001`, `cafebazaar.ir → 10002`), so each SNI route is
+  accounted separately even though they all arrive on the SNI listener port.
+
+#### Example: SNI router only
+
+```toml
+[[server]]
+name = "TU3"
+bind_addr = "0.0.0.0:30000"
+transport = "tcpmux"
+token = "QTRfs754a7"
+
+sni_router = true
+sni_listen_addr = "0.0.0.0:443"
+sni_inspect_timeout = 1
+sni_default_action = "reject"
+
+sni_routes = {
+  "myket.ir" = "10001",
+  "cafebazaar.ir" = "10002",
+  "telewebion.ir" = "10003"
+}
+```
+
+Here the server listens only on `0.0.0.0:443`. A TLS connection with SNI
+`myket.ir` enters the tunnel with target `10001`, `cafebazaar.ir` with `10002`,
+and `telewebion.ir` with `10003`. No listener is opened on 10001/10002/10003.
+
+#### Example: combined `raw_ports` + `sni_router`
+
+```toml
+[[server]]
+name = "TU3"
+bind_addr = "0.0.0.0:30000"
+transport = "tcpmux"
+token = "QTRfs754a7"
+
+raw_ports = [
+  "20000-20100"
+]
+
+sni_router = true
+sni_listen_addr = "0.0.0.0:443"
+sni_inspect_timeout = 1
+sni_default_action = "reject"
+
+sni_routes = {
+  "myket.ir" = "10001",
+  "cafebazaar.ir" = "10002",
+  "telewebion.ir" = "10003"
+}
+```
+
+`raw_ports` handles real raw forwarding (20000–20100) while `sni_routes` routes
+TLS connections on `:443` by SNI — completely independent of `raw_ports`.
+
+### Transport support
+
+The SNI router is transport-agnostic and works with every stream-based
+transport: `tcp`, `tcpmux`, `ws`, `wss`, `wsmux`, `wssmux`, and `quic` (its
+local TCP inbound path). It feeds routed connections into the same internal
+pipeline as raw port forwarding.
+
+The `udp` transport is the only exception: it only carries real UDP datagrams
+and cannot transport a TCP/TLS inbound stream. Enabling `sni_router` with
+`transport = "udp"` is rejected at startup with a clear error.
+
+### Validation rules
+
+A server entry is rejected at startup if:
+
+* it has neither `raw_ports` nor `sni_router` (no user-facing inbound);
+* `sni_router = true` but `sni_listen_addr` is empty;
+* `sni_router = true` but `sni_routes` is empty;
+* `sni_default_action` is set to anything other than `reject`;
+* `transport = "udp"` is combined with `sni_router = true`;
+* it still uses the removed `ports` field.
 
 ## Generating a Self-Signed TLS Certificate with OpenSSL
 

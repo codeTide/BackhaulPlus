@@ -45,7 +45,7 @@ type WsMuxConfig struct {
 	TLSCertFile      string // Path to the TLS certificate file
 	TLSKeyFile       string // Path to the TLS key file
 	TunnelStatus     string
-	Ports            []string
+	RawPorts         []string
 	Nodelay          bool
 	Sniffer          bool
 	KeepAlive        time.Duration
@@ -59,6 +59,11 @@ type WsMuxConfig struct {
 	WebPort          int
 	Mode             config.TransportType // ws or wss
 
+	SNIRouter         bool
+	SNIListenAddr     string
+	SNIInspectTimeout time.Duration
+	SNIDefaultAction  string
+	SNIRoutes         map[string]string
 }
 
 func NewWSMuxServer(parentCtx context.Context, config *WsMuxConfig, logger *logrus.Logger) *WsMuxTransport {
@@ -276,6 +281,10 @@ func (s *WsMuxTransport) tunnelListener() {
 				go s.channelHandler()
 				go s.parsePortMappings()
 
+				if s.config.SNIRouter {
+					go s.startSNIRouter()
+				}
+
 				s.logger.Infof("starting %d handle loops on each CPU thread", numCPU)
 
 				for i := 0; i < numCPU; i++ {
@@ -337,8 +346,39 @@ func (s *WsMuxTransport) tunnelListener() {
 	}
 }
 
+// startSNIRouter starts the transport-agnostic SNI router for this transport.
+func (s *WsMuxTransport) startSNIRouter() {
+	StartSNIRouter(s.ctx, SNIRouterConfig{
+		ListenAddr:     s.config.SNIListenAddr,
+		InspectTimeout: s.config.SNIInspectTimeout,
+		DefaultAction:  s.config.SNIDefaultAction,
+		Routes:         s.config.SNIRoutes,
+	}, s.logger, s.enqueueInbound)
+}
+
+// enqueueInbound delivers an inbound connection into the local pipeline,
+// mirroring acceptLocalConn. Returns false if the local channel is full.
+func (s *WsMuxTransport) enqueueInbound(conn net.Conn, target string, reportPort int) bool {
+	select {
+	case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: target, timeCreated: time.Now().UnixMilli(), reportPort: reportPort}:
+		// +1 for stream counter
+		atomic.AddInt32(&s.streamCounter, 1)
+
+		if atomic.LoadInt32(&s.streamCounter) >= atomic.LoadInt32(&s.sessionCounter)*int32(s.config.MuxCon) {
+			select { // Attempt to request a new connection
+			case s.reqNewConnChan <- struct{}{}:
+			default:
+				s.logger.Warn("failed to request new connection. channel is full")
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *WsMuxTransport) parsePortMappings() {
-	for _, portMapping := range s.config.Ports {
+	for _, portMapping := range s.config.RawPorts {
 		parts := strings.Split(portMapping, "=")
 
 		var localAddr, remoteAddr string
@@ -485,24 +525,9 @@ func (s *WsMuxTransport) acceptLocalConn(listener net.Listener, remoteAddr strin
 				s.logger.Warnf("failed to set TCP keep-alive period for %s: %v", tcpConn.RemoteAddr().String(), err)
 			}
 
-			select {
-			case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: remoteAddr, timeCreated: time.Now().UnixMilli()}:
+			if s.enqueueInbound(conn, remoteAddr, 0) {
 				s.logger.Debugf("accepted incoming TCP connection from %s", tcpConn.RemoteAddr().String())
-
-				// +1 for stream counter
-				atomic.AddInt32(&s.streamCounter, 1)
-
-				if atomic.LoadInt32(&s.streamCounter) >= atomic.LoadInt32(&s.sessionCounter)*int32(s.config.MuxCon) {
-					s.logger.Tracef("stream counter: %v, session counter: %v", atomic.LoadInt32(&s.streamCounter), atomic.LoadInt32(&s.sessionCounter))
-					// Attempt to request a new connection
-					select {
-					case s.reqNewConnChan <- struct{}{}:
-					default:
-						s.logger.Warn("failed to request new connection. channel is full")
-					}
-				}
-
-			default: // channel is full, discard the connection
+			} else { // channel is full, discard the connection
 				s.logger.Warnf("local listener channel is full, discarding TCP connection from %s", tcpConn.LocalAddr().String())
 				conn.Close()
 			}
@@ -566,7 +591,7 @@ func (s *WsMuxTransport) handleSession(session *smux.Session) {
 
 			// Handle data exchange between connections
 			go func() {
-				utils.TCPConnectionHandler(stream, incomingConn.conn, s.logger, s.usageMonitor, incomingConn.conn.LocalAddr().(*net.TCPAddr).Port, s.config.Sniffer)
+				utils.TCPConnectionHandler(stream, incomingConn.conn, s.logger, s.usageMonitor, incomingConn.usagePort(), s.config.Sniffer)
 				atomic.AddInt32(&s.streamCounter, -1)
 				<-counter // read signal from the channel
 			}()

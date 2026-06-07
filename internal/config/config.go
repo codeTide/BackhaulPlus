@@ -25,7 +25,7 @@ type ServerConfig struct {
 	Keepalive        int           `toml:"keepalive_period"`
 	ChannelSize      int           `toml:"channel_size"`
 	LogLevel         string        `toml:"log_level"`
-	Ports            []string      `toml:"ports"`
+	RawPorts         []string      `toml:"raw_ports"`
 	PPROF            bool          `toml:"pprof"`
 	MuxSession       int           `toml:"mux_session"`
 	MuxVersion       int           `toml:"mux_version"`
@@ -40,6 +40,17 @@ type ServerConfig struct {
 	Heartbeat        int           `toml:"heartbeat"`
 	MuxCon           int           `toml:"mux_con"`
 	AcceptUDP        bool          `toml:"accept_udp"`
+
+	// SNI-based internal TCP routing. When enabled, the server listens on
+	// SNIListenAddr, reads the TLS ClientHello (without terminating TLS) and
+	// routes the connection into the tunnel based on the SNI value. The route
+	// targets are virtual tunnel targets and do not need a matching raw_ports
+	// listener.
+	SNIRouter         bool              `toml:"sni_router"`
+	SNIListenAddr     string            `toml:"sni_listen_addr"`
+	SNIInspectTimeout int               `toml:"sni_inspect_timeout"`
+	SNIDefaultAction  string            `toml:"sni_default_action"`
+	SNIRoutes         map[string]string `toml:"sni_routes"`
 }
 
 // ClientConfig represents the configuration for the client.
