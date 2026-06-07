@@ -187,7 +187,9 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = []
+   raw_ports = [
+     "8080"
+   ]
    ```
 * **Client**:
 
@@ -243,7 +245,9 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = []
+   raw_ports = [
+     "8080"
+   ]
    ```
 * **Client**:
 
@@ -290,7 +294,9 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = []
+   raw_ports = [
+     "8080"
+   ]
    ```
 * **Client**:
 
@@ -325,7 +331,9 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = []
+   raw_ports = [
+     "8080"
+   ]
    ```
 
 * **Client**:
@@ -369,7 +377,9 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = []
+   raw_ports = [
+     "8080"
+   ]
    ```
 
 * **Client**:
@@ -418,7 +428,9 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = []
+   raw_ports = [
+     "8080"
+   ]
    ```
 * **Client**:
 
@@ -467,7 +479,9 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = []
+   raw_ports = [
+     "8080"
+   ]
    ```
 * **Client**:
 
@@ -499,6 +513,16 @@ To start using the solution, you'll need to configure both server and client com
 
 BackhaulPlus exposes two independent ways to accept user-facing inbound traffic
 on a server. They can be used separately or together.
+
+> **Each server must define at least one user-facing inbound:**
+> - non-empty `raw_ports` for direct raw forwarding, or
+> - `sni_router = true` with at least one valid `sni_routes` entry.
+>
+> `raw_ports` is optional, but it can only be omitted or left empty when
+> `sni_router = true` and a valid `sni_routes` is defined. SNI-only servers do
+> not need `raw_ports` — in that case, omit `raw_ports` entirely. A server with
+> an empty `raw_ports` and no SNI router is rejected at startup with:
+> `no inbound configured: set raw_ports or enable sni_router`.
 
 ### `raw_ports`
 
@@ -557,14 +581,31 @@ Important notes:
   (e.g. `myket.ir → 10001`, `cafebazaar.ir → 10002`), so each SNI route is
   accounted separately even though they all arrive on the SNI listener port.
 
-#### Example: SNI router only
+#### Example 1: raw forwarding only
 
 ```toml
 [[server]]
-name = "TU3"
+name = "raw-example"
 bind_addr = "0.0.0.0:30000"
 transport = "tcpmux"
-token = "QTRfs754a7"
+token = "example-token"
+
+raw_ports = [
+  "10000-10100"
+]
+```
+
+The server listens on ports 10000–10100 and forwards each into the tunnel. No
+SNI router is started.
+
+#### Example 2: SNI router only
+
+```toml
+[[server]]
+name = "sni-example"
+bind_addr = "0.0.0.0:30000"
+transport = "tcpmux"
+token = "example-token"
 
 sni_router = true
 sni_listen_addr = "0.0.0.0:443"
@@ -578,18 +619,19 @@ sni_routes = [
 ]
 ```
 
-Here the server listens only on `0.0.0.0:443`. A TLS connection with SNI
-`myket.ir` enters the tunnel with target `10001`, `cafebazaar.ir` with `10002`,
-and `telewebion.ir` with `10003`. No listener is opened on 10001/10002/10003.
+Here the server listens only on `0.0.0.0:443` and `raw_ports` is omitted
+entirely. A TLS connection with SNI `myket.ir` enters the tunnel with target
+`10001`, `cafebazaar.ir` with `10002`, and `telewebion.ir` with `10003`. No
+listener is opened on 10001/10002/10003.
 
-#### Example: combined `raw_ports` + `sni_router`
+#### Example 3: raw forwarding + SNI router
 
 ```toml
 [[server]]
-name = "TU3"
+name = "mixed-example"
 bind_addr = "0.0.0.0:30000"
 transport = "tcpmux"
-token = "QTRfs754a7"
+token = "example-token"
 
 raw_ports = [
   "20000-20100"
