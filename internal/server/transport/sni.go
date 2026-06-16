@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -10,8 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -26,94 +23,6 @@ const (
 	tlsHandshakeClientHello byte   = 0x01
 	tlsExtensionServerName  uint16 = 0x0000
 )
-
-// EnqueueTCPInbound delivers an accepted inbound connection into a transport's
-// local processing pipeline. target is the virtual tunnel target sent to the
-// client (e.g. "10001"); reportPort is the port used for usage/traffic stats
-// (0 means derive it from the connection's local address). It returns false if
-// the connection could not be enqueued (e.g. the local channel is full), in
-// which case the caller is responsible for closing conn.
-type EnqueueTCPInbound func(conn net.Conn, target string, reportPort int) bool
-
-// SNIRouterConfig holds the runtime configuration for an SNI router instance.
-type SNIRouterConfig struct {
-	ListenAddr     string
-	InspectTimeout time.Duration
-	DefaultAction  string
-	Routes         map[string]string // normalized (lowercase, trimmed) SNI -> target
-}
-
-// StartSNIRouter listens on cfg.ListenAddr and routes incoming TLS connections
-// to the tunnel based on their SNI, using enqueue to hand off connections. It
-// blocks until ctx is cancelled. TLS is never terminated: only the ClientHello
-// is inspected and the original bytes are replayed to the destination.
-func StartSNIRouter(ctx context.Context, cfg SNIRouterConfig, logger *logrus.Logger, enqueue EnqueueTCPInbound) {
-	if cfg.InspectTimeout <= 0 {
-		cfg.InspectTimeout = time.Second
-	}
-	if cfg.DefaultAction == "" {
-		cfg.DefaultAction = SNIDefaultActionReject
-	}
-
-	lc := net.ListenConfig{}
-	listener, err := lc.Listen(ctx, "tcp", cfg.ListenAddr)
-	if err != nil {
-		logger.Fatalf("SNI router failed to listen on %s: %v", cfg.ListenAddr, err)
-		return
-	}
-
-	logger.Infof("SNI router listening on %s with %d routes", cfg.ListenAddr, len(cfg.Routes))
-
-	go func() {
-		<-ctx.Done()
-		_ = listener.Close()
-	}()
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				logger.Debugf("SNI router accept error: %v", err)
-				continue
-			}
-		}
-
-		go handleSNIConn(conn, cfg, logger, enqueue)
-	}
-}
-
-func handleSNIConn(conn net.Conn, cfg SNIRouterConfig, logger *logrus.Logger, enqueue EnqueueTCPInbound) {
-	sni, firstBytes, err := ReadTLSClientHelloSNI(conn, cfg.InspectTimeout)
-	if err != nil {
-		logger.Debugf("SNI router: failed to read ClientHello from %s: %v", conn.RemoteAddr(), err)
-		conn.Close()
-		return
-	}
-
-	target, ok := cfg.Routes[sni]
-	if !ok {
-		// Only "reject" is currently supported; unknown SNIs are closed.
-		logger.Debugf("SNI router: no route for SNI %q from %s (default action: %s)", sni, conn.RemoteAddr(), cfg.DefaultAction)
-		conn.Close()
-		return
-	}
-
-	// Replay the inspected ClientHello bytes to the destination so the
-	// TLS/REALITY handshake is preserved end-to-end.
-	wrapped := NewPrefixedConn(conn, firstBytes)
-	reportPort := PortFromTarget(target)
-
-	if !enqueue(wrapped, target, reportPort) {
-		logger.Warnf("SNI router: local channel full, dropping connection for SNI %q", sni)
-		wrapped.Close()
-		return
-	}
-
-	logger.Debugf("SNI route matched: %s -> %s", sni, target)
-}
 
 // ReadTLSClientHelloSNI reads the TLS ClientHello from conn (without terminating
 // TLS), extracts the SNI server_name, and returns it normalized (lowercase,

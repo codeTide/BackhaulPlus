@@ -25,7 +25,7 @@ type ServerConfig struct {
 	Keepalive        int           `toml:"keepalive_period"`
 	ChannelSize      int           `toml:"channel_size"`
 	LogLevel         string        `toml:"log_level"`
-	RawPorts         []string      `toml:"raw_ports"`
+	Ports            []string      `toml:"ports"`
 	PPROF            bool          `toml:"pprof"`
 	MuxSession       int           `toml:"mux_session"`
 	MuxVersion       int           `toml:"mux_version"`
@@ -40,31 +40,47 @@ type ServerConfig struct {
 	Heartbeat        int           `toml:"heartbeat"`
 	MuxCon           int           `toml:"mux_con"`
 	AcceptUDP        bool          `toml:"accept_udp"`
-
-	// SNI-based internal TCP routing. When enabled, the server listens on
-	// SNIListenAddr, reads the TLS ClientHello (without terminating TLS) and
-	// routes the connection into the tunnel based on the SNI value. The route
-	// targets are virtual tunnel targets and do not need a matching raw_ports
-	// listener.
-	SNIRouter         bool             `toml:"sni_router"`
-	SNIListenAddr     string           `toml:"sni_listen_addr"`
-	SNIInspectTimeout int              `toml:"sni_inspect_timeout"`
-	SNIDefaultAction  string           `toml:"sni_default_action"`
-	SNIRoutes         []SNIRouteConfig `toml:"sni_routes"`
-	// SNIRouteMap is the normalized (lowercase, trimmed) SNI -> target lookup
-	// table derived from SNIRoutes during validation. It is not read from TOML.
-	SNIRouteMap map[string]string `toml:"-"`
 }
 
-// SNIRouteConfig is a single SNI routing rule, expressed in TOML as an inline
-// table inside the sni_routes array:
+// SNIGatewayConfig describes a standalone, transport-agnostic SNI gateway. A
+// gateway opens a single public TCP listener (e.g. 0.0.0.0:443), reads the TLS
+// ClientHello of every connection (without terminating TLS), extracts the SNI
+// and dispatches the connection - with the inspected bytes preserved - into the
+// runtime of the target [[server]] selected by the matching route.
 //
-//	sni_routes = [
-//	  { sni = "myket.ir", target = "10001" },
+// SNI routing is intentionally decoupled from [[server]] blocks so that several
+// servers can share a single public entrypoint (e.g. :443) without each one
+// trying to bind the same port.
+type SNIGatewayConfig struct {
+	Name           string                  `toml:"name"`
+	ListenAddr     string                  `toml:"listen_addr"`
+	InspectTimeout int                     `toml:"inspect_timeout"`
+	DefaultAction  string                  `toml:"default_action"`
+	Routes         []SNIGatewayRouteConfig `toml:"routes"`
+
+	// RouteMap is the normalized (trimmed, lowercased, trailing dot removed)
+	// SNI -> route lookup table built during validation. It is not read from
+	// TOML.
+	RouteMap map[string]SNIGatewayRoute `toml:"-"`
+}
+
+// SNIGatewayRouteConfig is a single SNI routing rule, expressed in TOML as an
+// inline table inside the routes array:
+//
+//	routes = [
+//	  { sni = "www.example.com", server = "TR1", target = "443" },
 //	]
-type SNIRouteConfig struct {
+type SNIGatewayRouteConfig struct {
 	SNI    string `toml:"sni"`
+	Server string `toml:"server"`
 	Target string `toml:"target"`
+}
+
+// SNIGatewayRoute is the normalized, validated form of a routing rule.
+type SNIGatewayRoute struct {
+	SNI    string
+	Server string
+	Target string
 }
 
 // ClientConfig represents the configuration for the client.
@@ -92,8 +108,10 @@ type ClientConfig struct {
 	EdgeIP           string        `toml:"edge_ip"`
 }
 
-// Config represents the complete configuration, including both server and client settings.
+// Config represents the complete configuration, including server, client and
+// SNI gateway settings.
 type Config struct {
-	Servers []ServerConfig `toml:"server"`
-	Clients []ClientConfig `toml:"client"`
+	Servers     []ServerConfig     `toml:"server"`
+	Clients     []ClientConfig     `toml:"client"`
+	SNIGateways []SNIGatewayConfig `toml:"sni_gateway"`
 }

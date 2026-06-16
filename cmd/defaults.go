@@ -23,7 +23,7 @@ const ( // Default values
 	defaultMaxStreamBuffer  = 65536   // 256KB
 	defaultSnifferLog       = "backhaul.json"
 	defaultMuxCon           = 8
-	// SNI router
+	// SNI gateway
 	defaultSNIInspectTimeout = 1        // seconds
 	defaultSNIDefaultAction  = "reject" // only "reject" is currently supported
 )
@@ -67,12 +67,15 @@ func applyDefaults(cfg *config.Config) {
 		if cfg.Servers[i].MuxCon < 1 {
 			cfg.Servers[i].MuxCon = defaultMuxCon
 		}
-		// SNI router defaults
-		if cfg.Servers[i].SNIInspectTimeout <= 0 {
-			cfg.Servers[i].SNIInspectTimeout = defaultSNIInspectTimeout
+	}
+
+	// SNI gateway defaults
+	for i := range cfg.SNIGateways {
+		if cfg.SNIGateways[i].InspectTimeout <= 0 {
+			cfg.SNIGateways[i].InspectTimeout = defaultSNIInspectTimeout
 		}
-		if cfg.Servers[i].SNIDefaultAction == "" {
-			cfg.Servers[i].SNIDefaultAction = defaultSNIDefaultAction
+		if cfg.SNIGateways[i].DefaultAction == "" {
+			cfg.SNIGateways[i].DefaultAction = defaultSNIDefaultAction
 		}
 	}
 

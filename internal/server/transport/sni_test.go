@@ -2,13 +2,10 @@ package transport
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"net"
 	"testing"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
 // --- test helpers -----------------------------------------------------------
@@ -188,106 +185,6 @@ func dialWithRetry(t *testing.T, addr string) net.Conn {
 			t.Fatalf("failed to dial SNI router at %s: %v", addr, err)
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-func TestStartSNIRouter_KnownSNI(t *testing.T) {
-	logger := logrus.New()
-	logger.SetLevel(logrus.PanicLevel)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	type captured struct {
-		conn       net.Conn
-		target     string
-		reportPort int
-	}
-	ch := make(chan captured, 1)
-	enqueue := func(conn net.Conn, target string, reportPort int) bool {
-		ch <- captured{conn, target, reportPort}
-		return true
-	}
-
-	addr := freeAddr(t)
-	go StartSNIRouter(ctx, SNIRouterConfig{
-		ListenAddr:     addr,
-		InspectTimeout: time.Second,
-		DefaultAction:  "reject",
-		Routes:         map[string]string{"myket.ir": "10001"},
-	}, logger, enqueue)
-
-	client := dialWithRetry(t, addr)
-	defer client.Close()
-
-	hello := buildClientHello("MYKET.IR") // upper-case to exercise normalization
-	if _, err := client.Write(hello); err != nil {
-		t.Fatalf("failed to write ClientHello: %v", err)
-	}
-
-	select {
-	case c := <-ch:
-		if c.target != "10001" {
-			t.Fatalf("expected target 10001, got %q", c.target)
-		}
-		if c.reportPort != 10001 {
-			t.Fatalf("expected reportPort 10001, got %d", c.reportPort)
-		}
-		// The wrapped conn must replay the original ClientHello bytes.
-		got := make([]byte, len(hello))
-		c.conn.SetReadDeadline(time.Now().Add(time.Second))
-		if _, err := readFull(c.conn, got); err != nil {
-			t.Fatalf("failed to read replayed ClientHello: %v", err)
-		}
-		if !bytes.Equal(got, hello) {
-			t.Fatalf("replayed bytes mismatch:\n got: %x\nwant: %x", got, hello)
-		}
-		c.conn.Close()
-	case <-time.After(2 * time.Second):
-		t.Fatal("enqueue was not called for known SNI")
-	}
-}
-
-func TestStartSNIRouter_UnknownSNIRejected(t *testing.T) {
-	logger := logrus.New()
-	logger.SetLevel(logrus.PanicLevel)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	ch := make(chan struct{}, 1)
-	enqueue := func(conn net.Conn, target string, reportPort int) bool {
-		ch <- struct{}{}
-		return true
-	}
-
-	addr := freeAddr(t)
-	go StartSNIRouter(ctx, SNIRouterConfig{
-		ListenAddr:     addr,
-		InspectTimeout: time.Second,
-		DefaultAction:  "reject",
-		Routes:         map[string]string{"myket.ir": "10001"},
-	}, logger, enqueue)
-
-	client := dialWithRetry(t, addr)
-	defer client.Close()
-
-	if _, err := client.Write(buildClientHello("unknown.example")); err != nil {
-		t.Fatalf("failed to write ClientHello: %v", err)
-	}
-
-	select {
-	case <-ch:
-		t.Fatal("enqueue should not be called for unknown SNI")
-	case <-time.After(500 * time.Millisecond):
-		// expected: connection rejected, no enqueue
-	}
-
-	// The router should have closed our connection.
-	client.SetReadDeadline(time.Now().Add(time.Second))
-	buf := make([]byte, 1)
-	if _, err := client.Read(buf); err == nil {
-		t.Fatal("expected connection to be closed by router for unknown SNI")
 	}
 }
 
