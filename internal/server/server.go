@@ -14,19 +14,158 @@ import (
 )
 
 type Server struct {
-	config *config.ServerConfig
-	ctx    context.Context
-	cancel context.CancelFunc
-	logger *logrus.Logger
+	config  *config.ServerConfig
+	ctx     context.Context
+	cancel  context.CancelFunc
+	logger  *logrus.Logger
+	runtime transport.InboundTarget
+	start   func()
 }
 
 func NewServer(cfg *config.ServerConfig, parentCtx context.Context) *Server {
 	ctx, cancel := context.WithCancel(parentCtx)
-	return &Server{
+	s := &Server{
 		config: cfg,
 		ctx:    ctx,
 		cancel: cancel,
 		logger: utils.NewLogger(cfg.LogLevel, cfg.Name),
+	}
+	s.build()
+	return s
+}
+
+// Runtime returns the inbound runtime for this server so it can be registered
+// for SNI gateway dispatch. It is nil for transports that cannot accept a
+// gateway-routed TCP/TLS stream (e.g. udp).
+func (s *Server) Runtime() transport.InboundTarget {
+	return s.runtime
+}
+
+// build constructs the transport runtime for the configured transport and wires
+// up its start function. The runtime is created synchronously so it can be
+// registered before the SNI gateways begin dispatching.
+func (s *Server) build() {
+	switch s.config.Transport {
+	case config.TCP:
+		rt := transport.NewTCPServer(s.ctx, &transport.TcpConfig{
+			BindAddr:     s.config.BindAddr,
+			Nodelay:      s.config.Nodelay,
+			KeepAlive:    time.Duration(s.config.Keepalive) * time.Second,
+			Heartbeat:    time.Duration(s.config.Heartbeat) * time.Second,
+			Token:        s.config.Token,
+			ChannelSize:  s.config.ChannelSize,
+			Ports:        s.config.Ports,
+			Sniffer:      s.config.Sniffer,
+			WebPort:      s.config.WebPort,
+			SnifferLog:   s.config.SnifferLog,
+			AcceptUDP:    s.config.AcceptUDP,
+			AllowMultiIP: s.config.AllowMultiIP,
+		}, s.logger)
+		s.runtime = rt
+		s.start = rt.Start
+
+	case config.TCPMUX:
+		rt := transport.NewTcpMuxServer(s.ctx, &transport.TcpMuxConfig{
+			BindAddr:         s.config.BindAddr,
+			Nodelay:          s.config.Nodelay,
+			KeepAlive:        time.Duration(s.config.Keepalive) * time.Second,
+			Heartbeat:        time.Duration(s.config.Heartbeat) * time.Second,
+			Token:            s.config.Token,
+			ChannelSize:      s.config.ChannelSize,
+			Ports:            s.config.Ports,
+			MuxCon:           s.config.MuxCon,
+			MuxVersion:       s.config.MuxVersion,
+			MaxFrameSize:     s.config.MaxFrameSize,
+			MaxReceiveBuffer: s.config.MaxReceiveBuffer,
+			MaxStreamBuffer:  s.config.MaxStreamBuffer,
+			Sniffer:          s.config.Sniffer,
+			WebPort:          s.config.WebPort,
+			SnifferLog:       s.config.SnifferLog,
+			AllowMultiIP:     s.config.AllowMultiIP,
+		}, s.logger)
+		s.runtime = rt
+		s.start = rt.Start
+
+	case config.WS, config.WSS:
+		rt := transport.NewWSServer(s.ctx, &transport.WsConfig{
+			BindAddr:    s.config.BindAddr,
+			Nodelay:     s.config.Nodelay,
+			KeepAlive:   time.Duration(s.config.Keepalive) * time.Second,
+			Heartbeat:   time.Duration(s.config.Heartbeat) * time.Second,
+			Token:       s.config.Token,
+			ChannelSize: s.config.ChannelSize,
+			Ports:       s.config.Ports,
+			Sniffer:     s.config.Sniffer,
+			WebPort:     s.config.WebPort,
+			SnifferLog:  s.config.SnifferLog,
+			Mode:        s.config.Transport,
+			TLSCertFile: s.config.TLSCertFile,
+			TLSKeyFile:  s.config.TLSKeyFile,
+		}, s.logger)
+		s.runtime = rt
+		s.start = rt.Start
+
+	case config.WSMUX, config.WSSMUX:
+		rt := transport.NewWSMuxServer(s.ctx, &transport.WsMuxConfig{
+			BindAddr:         s.config.BindAddr,
+			Nodelay:          s.config.Nodelay,
+			KeepAlive:        time.Duration(s.config.Keepalive) * time.Second,
+			Heartbeat:        time.Duration(s.config.Heartbeat) * time.Second,
+			Token:            s.config.Token,
+			ChannelSize:      s.config.ChannelSize,
+			Ports:            s.config.Ports,
+			MuxCon:           s.config.MuxCon,
+			MuxVersion:       s.config.MuxVersion,
+			MaxFrameSize:     s.config.MaxFrameSize,
+			MaxReceiveBuffer: s.config.MaxReceiveBuffer,
+			MaxStreamBuffer:  s.config.MaxStreamBuffer,
+			Sniffer:          s.config.Sniffer,
+			WebPort:          s.config.WebPort,
+			SnifferLog:       s.config.SnifferLog,
+			Mode:             s.config.Transport,
+			TLSCertFile:      s.config.TLSCertFile,
+			TLSKeyFile:       s.config.TLSKeyFile,
+		}, s.logger)
+		s.runtime = rt
+		s.start = rt.Start
+
+	case config.QUIC:
+		rt := transport.NewQuicServer(s.ctx, &transport.QuicConfig{
+			BindAddr:     s.config.BindAddr,
+			Nodelay:      s.config.Nodelay,
+			KeepAlive:    time.Duration(s.config.Keepalive) * time.Second,
+			Heartbeat:    time.Duration(s.config.Heartbeat) * time.Second,
+			Token:        s.config.Token,
+			MuxCon:       s.config.MuxCon,
+			ChannelSize:  s.config.ChannelSize,
+			Ports:        s.config.Ports,
+			Sniffer:      s.config.Sniffer,
+			WebPort:      s.config.WebPort,
+			SnifferLog:   s.config.SnifferLog,
+			TLSCertFile:  s.config.TLSCertFile,
+			TLSKeyFile:   s.config.TLSKeyFile,
+			AllowMultiIP: s.config.AllowMultiIP,
+		}, s.logger)
+		s.runtime = rt
+		s.start = rt.TunnelListener
+
+	case config.UDP:
+		rt := transport.NewUDPServer(s.ctx, &transport.UdpConfig{
+			BindAddr:    s.config.BindAddr,
+			Heartbeat:   time.Duration(s.config.Heartbeat) * time.Second,
+			Token:       s.config.Token,
+			ChannelSize: s.config.ChannelSize,
+			Ports:       s.config.Ports,
+			Sniffer:     s.config.Sniffer,
+			WebPort:     s.config.WebPort,
+			SnifferLog:  s.config.SnifferLog,
+		}, s.logger)
+		// UDP cannot serve a gateway-routed TCP/TLS stream, so it is not
+		// registered as an inbound target.
+		s.start = rt.Start
+
+	default:
+		s.start = func() { s.logger.Fatal("invalid transport type: ", s.config.Transport) }
 	}
 }
 
@@ -39,157 +178,7 @@ func (s *Server) Start() {
 		}()
 	}
 
-	if s.config.Transport == config.TCP {
-		tcpConfig := &transport.TcpConfig{
-			BindAddr:          s.config.BindAddr,
-			Nodelay:           s.config.Nodelay,
-			KeepAlive:         time.Duration(s.config.Keepalive) * time.Second,
-			Heartbeat:         time.Duration(s.config.Heartbeat) * time.Second,
-			Token:             s.config.Token,
-			ChannelSize:       s.config.ChannelSize,
-			RawPorts:          s.config.RawPorts,
-			Sniffer:           s.config.Sniffer,
-			WebPort:           s.config.WebPort,
-			SnifferLog:        s.config.SnifferLog,
-			AcceptUDP:         s.config.AcceptUDP,
-			AllowMultiIP:      s.config.AllowMultiIP,
-			SNIRouter:         s.config.SNIRouter,
-			SNIListenAddr:     s.config.SNIListenAddr,
-			SNIInspectTimeout: time.Duration(s.config.SNIInspectTimeout) * time.Second,
-			SNIDefaultAction:  s.config.SNIDefaultAction,
-			SNIRoutes:         s.config.SNIRouteMap,
-		}
-
-		tcpServer := transport.NewTCPServer(s.ctx, tcpConfig, s.logger)
-		go tcpServer.Start()
-
-	} else if s.config.Transport == config.TCPMUX {
-		tcpMuxConfig := &transport.TcpMuxConfig{
-			BindAddr:          s.config.BindAddr,
-			Nodelay:           s.config.Nodelay,
-			KeepAlive:         time.Duration(s.config.Keepalive) * time.Second,
-			Heartbeat:         time.Duration(s.config.Heartbeat) * time.Second,
-			Token:             s.config.Token,
-			ChannelSize:       s.config.ChannelSize,
-			RawPorts:          s.config.RawPorts,
-			MuxCon:            s.config.MuxCon,
-			MuxVersion:        s.config.MuxVersion,
-			MaxFrameSize:      s.config.MaxFrameSize,
-			MaxReceiveBuffer:  s.config.MaxReceiveBuffer,
-			MaxStreamBuffer:   s.config.MaxStreamBuffer,
-			Sniffer:           s.config.Sniffer,
-			WebPort:           s.config.WebPort,
-			SnifferLog:        s.config.SnifferLog,
-			AllowMultiIP:      s.config.AllowMultiIP,
-			SNIRouter:         s.config.SNIRouter,
-			SNIListenAddr:     s.config.SNIListenAddr,
-			SNIInspectTimeout: time.Duration(s.config.SNIInspectTimeout) * time.Second,
-			SNIDefaultAction:  s.config.SNIDefaultAction,
-			SNIRoutes:         s.config.SNIRouteMap,
-		}
-
-		tcpMuxServer := transport.NewTcpMuxServer(s.ctx, tcpMuxConfig, s.logger)
-		go tcpMuxServer.Start()
-
-	} else if s.config.Transport == config.WS || s.config.Transport == config.WSS {
-		wsConfig := &transport.WsConfig{
-			BindAddr:          s.config.BindAddr,
-			Nodelay:           s.config.Nodelay,
-			KeepAlive:         time.Duration(s.config.Keepalive) * time.Second,
-			Heartbeat:         time.Duration(s.config.Heartbeat) * time.Second,
-			Token:             s.config.Token,
-			ChannelSize:       s.config.ChannelSize,
-			RawPorts:          s.config.RawPorts,
-			Sniffer:           s.config.Sniffer,
-			WebPort:           s.config.WebPort,
-			SnifferLog:        s.config.SnifferLog,
-			Mode:              s.config.Transport,
-			TLSCertFile:       s.config.TLSCertFile,
-			TLSKeyFile:        s.config.TLSKeyFile,
-			SNIRouter:         s.config.SNIRouter,
-			SNIListenAddr:     s.config.SNIListenAddr,
-			SNIInspectTimeout: time.Duration(s.config.SNIInspectTimeout) * time.Second,
-			SNIDefaultAction:  s.config.SNIDefaultAction,
-			SNIRoutes:         s.config.SNIRouteMap,
-		}
-
-		wsServer := transport.NewWSServer(s.ctx, wsConfig, s.logger)
-		go wsServer.Start()
-
-	} else if s.config.Transport == config.WSMUX || s.config.Transport == config.WSSMUX {
-		wsMuxConfig := &transport.WsMuxConfig{
-			BindAddr:          s.config.BindAddr,
-			Nodelay:           s.config.Nodelay,
-			KeepAlive:         time.Duration(s.config.Keepalive) * time.Second,
-			Heartbeat:         time.Duration(s.config.Heartbeat) * time.Second,
-			Token:             s.config.Token,
-			ChannelSize:       s.config.ChannelSize,
-			RawPorts:          s.config.RawPorts,
-			MuxCon:            s.config.MuxCon,
-			MuxVersion:        s.config.MuxVersion,
-			MaxFrameSize:      s.config.MaxFrameSize,
-			MaxReceiveBuffer:  s.config.MaxReceiveBuffer,
-			MaxStreamBuffer:   s.config.MaxStreamBuffer,
-			Sniffer:           s.config.Sniffer,
-			WebPort:           s.config.WebPort,
-			SnifferLog:        s.config.SnifferLog,
-			Mode:              s.config.Transport,
-			TLSCertFile:       s.config.TLSCertFile,
-			TLSKeyFile:        s.config.TLSKeyFile,
-			SNIRouter:         s.config.SNIRouter,
-			SNIListenAddr:     s.config.SNIListenAddr,
-			SNIInspectTimeout: time.Duration(s.config.SNIInspectTimeout) * time.Second,
-			SNIDefaultAction:  s.config.SNIDefaultAction,
-			SNIRoutes:         s.config.SNIRouteMap,
-		}
-
-		wsMuxServer := transport.NewWSMuxServer(s.ctx, wsMuxConfig, s.logger)
-		go wsMuxServer.Start()
-
-	} else if s.config.Transport == config.QUIC {
-		quicConfig := &transport.QuicConfig{
-			BindAddr:          s.config.BindAddr,
-			Nodelay:           s.config.Nodelay,
-			KeepAlive:         time.Duration(s.config.Keepalive) * time.Second,
-			Heartbeat:         time.Duration(s.config.Heartbeat) * time.Second,
-			Token:             s.config.Token,
-			MuxCon:            s.config.MuxCon,
-			ChannelSize:       s.config.ChannelSize,
-			RawPorts:          s.config.RawPorts,
-			Sniffer:           s.config.Sniffer,
-			WebPort:           s.config.WebPort,
-			SnifferLog:        s.config.SnifferLog,
-			TLSCertFile:       s.config.TLSCertFile,
-			TLSKeyFile:        s.config.TLSKeyFile,
-			AllowMultiIP:      s.config.AllowMultiIP,
-			SNIRouter:         s.config.SNIRouter,
-			SNIListenAddr:     s.config.SNIListenAddr,
-			SNIInspectTimeout: time.Duration(s.config.SNIInspectTimeout) * time.Second,
-			SNIDefaultAction:  s.config.SNIDefaultAction,
-			SNIRoutes:         s.config.SNIRouteMap,
-		}
-
-		quicServer := transport.NewQuicServer(s.ctx, quicConfig, s.logger)
-		go quicServer.TunnelListener()
-
-	} else if s.config.Transport == config.UDP {
-		udpConfig := &transport.UdpConfig{
-			BindAddr:    s.config.BindAddr,
-			Heartbeat:   time.Duration(s.config.Heartbeat) * time.Second,
-			Token:       s.config.Token,
-			ChannelSize: s.config.ChannelSize,
-			RawPorts:    s.config.RawPorts,
-			Sniffer:     s.config.Sniffer,
-			WebPort:     s.config.WebPort,
-			SnifferLog:  s.config.SnifferLog,
-		}
-
-		udpServer := transport.NewUDPServer(s.ctx, udpConfig, s.logger)
-		go udpServer.Start()
-
-	} else {
-		s.logger.Fatal("invalid transport type: ", s.config.Transport)
-	}
+	go s.start()
 
 	<-s.ctx.Done()
 

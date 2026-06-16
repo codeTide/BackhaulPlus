@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codeTide/BackhaulPlus/internal/utils"
@@ -32,6 +33,7 @@ type QuicTransport struct {
 	usageMonitor   *web.Usage
 	restartMutex   sync.Mutex
 	coldStart      bool
+	ready          atomic.Bool
 }
 
 type QuicConfig struct {
@@ -39,7 +41,7 @@ type QuicConfig struct {
 	TunnelStatus string
 	SnifferLog   string
 	Token        string
-	RawPorts     []string
+	Ports        []string
 	Nodelay      bool
 	Sniffer      bool
 	ChannelSize  int
@@ -50,12 +52,6 @@ type QuicConfig struct {
 	TLSCertFile  string        // Path to the TLS certificate file
 	TLSKeyFile   string        // Path to the TLS key file
 	AllowMultiIP bool
-
-	SNIRouter         bool
-	SNIListenAddr     string
-	SNIInspectTimeout time.Duration
-	SNIDefaultAction  string
-	SNIRoutes         map[string]string
 }
 
 func NewQuicServer(parentCtx context.Context, config *QuicConfig, logger *logrus.Logger) *QuicTransport {
@@ -113,6 +109,7 @@ func (s *QuicTransport) Restart() {
 	s.getNewConnChan = make(chan struct{}, s.config.ChannelSize)
 	s.localChan = make(chan LocalTCPConn, s.config.ChannelSize)
 	s.controlChannel = nil
+	s.ready.Store(false)
 	s.usageMonitor = web.NewDataStore(fmt.Sprintf(":%v", s.config.WebPort), ctx, s.config.SnifferLog, s.config.Sniffer, &s.config.TunnelStatus, s.logger)
 	s.config.TunnelStatus = ""
 	s.coldStart = true
@@ -122,6 +119,9 @@ func (s *QuicTransport) Restart() {
 }
 
 func (s *QuicTransport) keepalive() {
+	// When keepalive exits the control channel is no longer usable.
+	defer s.ready.Store(false)
+
 	stream, err := s.controlChannel.AcceptStream(context.Background())
 	if err != nil {
 		s.logger.Error("failed to open stream for keepalive")
@@ -220,14 +220,15 @@ func (s *QuicTransport) keepalive() {
 	}
 }
 
-// startSNIRouter starts the transport-agnostic SNI router for this transport.
-func (s *QuicTransport) startSNIRouter() {
-	StartSNIRouter(s.ctx, SNIRouterConfig{
-		ListenAddr:     s.config.SNIListenAddr,
-		InspectTimeout: s.config.SNIInspectTimeout,
-		DefaultAction:  s.config.SNIDefaultAction,
-		Routes:         s.config.SNIRoutes,
-	}, s.logger, s.enqueueInbound)
+// IsReady reports whether the control channel is established.
+func (s *QuicTransport) IsReady() bool { return s.ready.Load() }
+
+// EnqueueInbound implements InboundTarget for SNI gateway dispatch.
+func (s *QuicTransport) EnqueueInbound(conn net.Conn, target string, reportPort int) bool {
+	if !s.ready.Load() {
+		return false
+	}
+	return s.enqueueInbound(conn, target, reportPort)
 }
 
 // enqueueInbound delivers an inbound connection into the local pipeline,
@@ -242,7 +243,7 @@ func (s *QuicTransport) enqueueInbound(conn net.Conn, target string, reportPort 
 }
 
 func (s *QuicTransport) portConfigReader() {
-	for _, portMapping := range s.config.RawPorts {
+	for _, portMapping := range s.config.Ports {
 		var localAddr string
 		parts := strings.Split(portMapping, "=")
 		if len(parts) < 2 {
@@ -310,6 +311,7 @@ func (s *QuicTransport) channelHandshake(qConn quic.Connection) {
 	}
 
 	s.controlChannel = qConn
+	s.ready.Store(true)
 
 	// close stream
 	stream.Close()
@@ -320,10 +322,6 @@ func (s *QuicTransport) channelHandshake(qConn quic.Connection) {
 	if s.coldStart {
 		go s.portConfigReader()
 		go s.handleTunConn()
-
-		if s.config.SNIRouter {
-			go s.startSNIRouter()
-		}
 	}
 	go s.keepalive()
 

@@ -19,7 +19,7 @@ Welcome to the **`BackhaulPlus`** project! This project is an enhanced fork of B
       - [Secure WebSocket Configuration](#secure-websocket-configuration)
       - [WS Multiplexing Configuration](#ws-multiplexing-configuration)
       - [WSS Multiplexing Configuration](#wss-multiplexing-configuration)
-5. [Raw Ports vs. SNI-based Routing](#raw-ports-vs-sni-based-routing)
+5. [Ports and SNI Gateways](#ports-and-sni-gateways)
 6. [Generating a Self-Signed TLS Certificate with OpenSSL](#generating-a-self-signed-tls-certificate-with-openssl)
 7. [Running BackhaulPlus as a service](#running-backhaulplus-as-a-service)
 8. [FAQ](#faq)
@@ -105,10 +105,11 @@ To start using the solution, you'll need to configure both server and client com
     tls_key = "/root/server.key"  # Path to the TLS private key file for wss/wssmux. (mandatory for wss/wssmux).
     log_level = "info"            # Log level ("panic", "fatal", "error", "warn", "info", "debug", "trace", optional, default: "info").
 
-    # NOTE: the old `ports` field has been removed. Use `raw_ports` instead.
-    raw_ports = [
+    # NOTE: the field is named `ports`. The old `raw_ports` name has been
+    # removed; a config still using `raw_ports` fails fast at startup.
+    ports = [
       "443-600",                  # Listen on all ports in the range 443 to 600
-      "443-600:5201",             # Listen on all ports in the range 443 to 600 and forward traffic to 5201
+      "443-600=5201",             # Listen on all ports in the range 443 to 600 and forward traffic to 5201
       "443-600=1.1.1.1:5201",     # Listen on all ports in the range 443 to 600 and forward traffic to 1.1.1.1:5201
       "443",                      # Listen on local port 443 and forward to remote port 443 (default forwarding).
       "4000=5000",                # Listen on local port 4000 (bind to all local IPs) and forward to remote port 5000.
@@ -116,18 +117,11 @@ To start using the solution, you'll need to configure both server and client com
       "443=1.1.1.1:5201",         # Listen on local port 443 and forward to a specific remote IP (1.1.1.1) on port 5201.
       "127.0.0.2:443=1.1.1.1:5201" # Bind to specific local IP (127.0.0.2), listen on port 443, and forward to remote IP (1.1.1.1) on port 5201.
     ]
-
-    # SNI-based internal TCP routing (optional). See the "SNI-based Routing"
-    # section below for details.
-    sni_router = false
-    sni_listen_addr = "0.0.0.0:443"
-    sni_inspect_timeout = 1
-    sni_default_action = "reject"
-    sni_routes = [
-      { sni = "myket.ir", target = "10001" },
-      { sni = "cafebazaar.ir", target = "10002" }
-    ]
     ```
+
+    SNI-based routing is now configured in a standalone `[[sni_gateway]]`
+    section instead of per-server fields. See
+    [Ports and SNI Gateways](#ports-and-sni-gateways) below.
 
    To start the `server`:
 
@@ -174,6 +168,7 @@ To start using the solution, you'll need to configure both server and client com
 
    ```toml
    [[server]]
+   name = "SRV1"
    bind_addr = "0.0.0.0:3080"
    transport = "tcp"
    accept_udp = false 
@@ -187,7 +182,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = [
+   ports = [
      "8080"
    ]
    ```
@@ -228,6 +223,7 @@ To start using the solution, you'll need to configure both server and client com
 
    ```toml
    [[server]]
+   name = "SRV1"
    bind_addr = "0.0.0.0:3080"
    transport = "tcpmux"
    token = "your_token" 
@@ -245,7 +241,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = [
+   ports = [
      "8080"
    ]
    ```
@@ -285,6 +281,7 @@ To start using the solution, you'll need to configure both server and client com
 
    ```toml
    [[server]]
+   name = "SRV1"
    bind_addr = "0.0.0.0:3080"
    transport = "udp"
    token = "your_token"
@@ -294,7 +291,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = [
+   ports = [
      "8080"
    ]
    ```
@@ -320,6 +317,7 @@ To start using the solution, you'll need to configure both server and client com
 
    ```toml
    [[server]]
+   name = "SRV1"
    bind_addr = "0.0.0.0:8080"
    transport = "ws"
    token = "your_token" 
@@ -331,7 +329,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = [
+   ports = [
      "8080"
    ]
    ```
@@ -365,6 +363,7 @@ To start using the solution, you'll need to configure both server and client com
 
    ```toml
    [[server]]
+   name = "SRV1"
    bind_addr = "0.0.0.0:8443"
    transport = "wss"
    token = "your_token" 
@@ -377,7 +376,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = [
+   ports = [
      "8080"
    ]
    ```
@@ -412,6 +411,7 @@ To start using the solution, you'll need to configure both server and client com
 
    ```toml
    [[server]]
+   name = "SRV1"
    bind_addr = "0.0.0.0:3080"
    transport = "wsmux"
    token = "your_token" 
@@ -428,7 +428,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = [
+   ports = [
      "8080"
    ]
    ```
@@ -461,6 +461,7 @@ To start using the solution, you'll need to configure both server and client com
 
    ```toml
    [[server]]
+   name = "SRV1"
    bind_addr = "0.0.0.0:443"
    transport = "wssmux"
    token = "your_token" 
@@ -479,7 +480,7 @@ To start using the solution, you'll need to configure both server and client com
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
    log_level = "info"
-   raw_ports = [
+   ports = [
      "8080"
    ]
    ```
@@ -509,170 +510,182 @@ To start using the solution, you'll need to configure both server and client com
 
 
 
-## Raw Ports vs. SNI-based Routing
+## Ports and SNI Gateways
 
-BackhaulPlus exposes two independent ways to accept user-facing inbound traffic
-on a server. They can be used separately or together.
+BackhaulPlus accepts user-facing inbound traffic in two independent ways:
 
-> **Each server must define at least one user-facing inbound:**
-> - non-empty `raw_ports` for direct raw forwarding, or
-> - `sni_router = true` with at least one valid `sni_routes` entry.
->
-> `raw_ports` is optional, but it can only be omitted or left empty when
-> `sni_router = true` and a valid `sni_routes` is defined. SNI-only servers do
-> not need `raw_ports` — in that case, omit `raw_ports` entirely. A server with
-> an empty `raw_ports` and no SNI router is rejected at startup with:
-> `no inbound configured: set raw_ports or enable sni_router`.
+* **`ports`** on a `[[server]]` — raw TCP/UDP port forwarding into that server's
+  tunnel.
+* **`[[sni_gateway]]`** — a standalone, shared public listener (e.g.
+  `0.0.0.0:443`) that routes TLS connections to the correct server purely by
+  their SNI, **without terminating TLS**.
 
-### `raw_ports`
+> **Breaking changes**
+> - `raw_ports` has been removed; use `ports`. A config still containing
+>   `raw_ports` fails fast with:
+>   `field "raw_ports" has been removed; use "ports" instead`.
+> - Per-server SNI routing (`sni_router`, `sni_listen_addr`,
+>   `sni_inspect_timeout`, `sni_default_action`, `sni_routes`) has been removed;
+>   use `[[sni_gateway]]`. A config still containing any of those fields fails
+>   fast with: `per-server sni_router has been removed; use [[sni_gateway]] instead`.
 
-> The legacy `ports` field has been **removed**. Use `raw_ports` instead. If a
-> configuration still contains `ports`, BackhaulPlus fails fast with:
-> `field "ports" has been removed; use "raw_ports" instead`.
+### `ports`
 
-`raw_ports` is a list of ports that the BackhaulPlus server actually listens on
-and forwards (raw TCP/UDP) into the tunnel. It accepts the same formats the old
-`ports` field did:
+`ports` is a list of ports that the server actually listens on and forwards
+(raw TCP/UDP) into its tunnel. Supported formats:
 
 ```toml
-raw_ports = [
-  "20000-20100"               # Listen on every port in 20000..20100, forward each to the same remote port
+ports = [
+  "443-600",                   # Listen on every port in 443..600, forward each to the same remote port
+  "443-600=5201",              # Range, forward all to remote port 5201
+  "443-600=1.1.1.1:5201",      # Range, forward all to 1.1.1.1:5201
+  "443",                       # Single port, forward to remote port 443
+  "4000=5000",                 # Listen on 4000, forward to remote 5000
+  "127.0.0.2:443=5201",        # Bind a specific local IP, forward to remote 5201
+  "443=1.1.1.1:5201",          # Listen on 443, forward to 1.1.1.1:5201
+  "127.0.0.2:443=1.1.1.1:5201" # Bind a specific local IP, forward to 1.1.1.1:5201
 ]
 ```
 
-### `sni_router`
+### `[[sni_gateway]]`
 
-`sni_router` enables an internal SNI-based TCP router. It is a TCP listener that
+A **SNI gateway** is a standalone section that is intentionally decoupled from
+`[[server]]` blocks. It opens **one** public TCP listener (e.g. `0.0.0.0:443`),
 reads the TLS **ClientHello** of each incoming connection **without terminating
-TLS** (no certificate is required, no traffic is decrypted) and routes the
-connection into the tunnel based on the SNI value. The inspected ClientHello
-bytes are preserved and replayed to the destination, so TLS/REALITY/XHTTP
-handshakes keep working end-to-end.
+TLS** (no certificate is required, no traffic is decrypted), extracts the SNI,
+and dispatches the connection — with the inspected ClientHello bytes preserved
+and replayed — into the tunnel of the routed `[[server]]`.
 
-This removes the need for an extra HAProxy/Nginx `stream` hop in front of
-BackhaulPlus: there is **no internal `127.0.0.1:10001` dial**, no extra loopback
-hop, and no second socket pair — the same accepted connection is fed directly
-into the tunnel transport, exactly like raw port forwarding, but without a real
-raw listener for that route.
+Why a separate section? Because several external servers (e.g. `TR1` and `US1`)
+can sit behind a **single** public `IP:443` entrypoint. Each keeps its own
+tunnel and its own client; the gateway only decides, per SNI, which server's
+runtime should receive the connection. Without this, two server blocks both
+trying to listen on `0.0.0.0:443` would fail with `address already in use`.
+
+A gateway never terminates TLS: only the ClientHello is pre-read, the first
+bytes are preserved with an internal `PrefixedConn`, and the original stream is
+handed off intact so TLS/REALITY/XHTTP handshakes keep working end-to-end.
 
 Configuration fields:
 
 | Field | Meaning |
 | --- | --- |
-| `sni_router` | Enable the SNI router (`true`/`false`, default `false`). |
-| `sni_listen_addr` | Address the SNI router listens on (e.g. `0.0.0.0:443`). Required when `sni_router = true`. |
-| `sni_inspect_timeout` | Seconds allowed to read the ClientHello. Defaults to `1` if `<= 0`. |
-| `sni_default_action` | Action for unknown SNIs. Only `reject` is currently supported (default). |
-| `sni_routes` | Array of `{ sni = "...", target = "..." }` rules mapping an exact SNI host to a virtual tunnel target. |
+| `name` | Label for this gateway, used in logs. |
+| `listen_addr` | The single public address the gateway listens on (e.g. `0.0.0.0:443`). Required, must be unique, and must not collide with any server `ports` listener. |
+| `inspect_timeout` | Seconds allowed to read the ClientHello. Defaults to `1` if `<= 0`. |
+| `default_action` | Action for unknown SNIs. Only `reject` is currently supported (default). |
+| `routes` | Array of `{ sni = "...", server = "...", target = "..." }` rules. |
 
-Important notes:
+Route fields:
 
-* The targets inside `sni_routes` (e.g. `"10001"`) are **virtual tunnel
-  targets**. They are sent to the client unchanged and do **not** need a matching
-  entry in `raw_ports`. No listener is opened on the server for those ports.
-* The client/middle side does not know whether a connection arrived via
-  `raw_ports` or `sni_routes`; it receives the same target string and connects
-  to its destination with its existing logic.
-* SNI keys are normalized (trimmed, lowercased, trailing dot removed) and matched
-  case-insensitively. Only exact matches are supported (no wildcards/regex yet).
-* If an SNI does not match any route and `sni_default_action = "reject"`, the
-  connection is closed.
-* Per-route traffic in the usage monitor is reported using the target port
-  (e.g. `myket.ir → 10001`, `cafebazaar.ir → 10002`), so each SNI route is
-  accounted separately even though they all arrive on the SNI listener port.
+* `sni` — the exact SNI host to match. Normalized (trimmed, lowercased, trailing
+  dot removed) and matched case-insensitively. No wildcards/regex yet.
+* `server` — the `name` of the `[[server]]` whose tunnel receives the connection.
+* `target` — the target string sent to the external client (e.g. `"443"`). It is
+  the destination the client connects to and does **not** need a matching
+  `ports` entry on the server. When `target` is numeric, per-route traffic in
+  the usage monitor is reported under that port, so each SNI route is accounted
+  separately even though they all arrive on the gateway listener.
 
-#### Example 1: raw forwarding only
+### Multi-server example
 
 ```toml
 [[server]]
-name = "raw-example"
-bind_addr = "0.0.0.0:30000"
+name = "TR1"
+bind_addr = "0.0.0.0:20001"
 transport = "tcpmux"
 token = "example-token"
 
-raw_ports = [
-  "10000-10100"
+ports = [
+  "64335=64335"
+]
+
+[[server]]
+name = "US1"
+bind_addr = "0.0.0.0:20002"
+transport = "tcpmux"
+token = "example-token"
+
+ports = [
+  "64336=64335"
+]
+
+[[sni_gateway]]
+name = "PUBLIC-443"
+listen_addr = "0.0.0.0:443"
+inspect_timeout = 1
+default_action = "reject"
+
+routes = [
+  { sni = "tr.example.com", server = "TR1", target = "443" },
+  { sni = "us.example.com", server = "US1", target = "443" }
 ]
 ```
 
-The server listens on ports 10000–10100 and forwards each into the tunnel. No
-SNI router is started.
+Behaviour on the Iran-side server (`IR1`):
 
-#### Example 2: SNI router only
+```text
+IR1:443 + SNI tr.example.com → TR1 → target 443
+IR1:443 + SNI us.example.com → US1 → target 443
+IR1:64335 → TR1 → target 64335
+IR1:64336 → US1 → target 64335
+```
+
+Only the `[[sni_gateway]]` binds `0.0.0.0:443`; `TR1` and `US1` each keep their
+own tunnel and their own dedicated `ports`, so there is no port conflict.
+
+### SNI-only server (no `ports`)
+
+A server may have **no** `ports` of its own as long as at least one gateway
+route references it:
 
 ```toml
 [[server]]
-name = "sni-example"
-bind_addr = "0.0.0.0:30000"
+name = "TR1"
+bind_addr = "0.0.0.0:20001"
 transport = "tcpmux"
 token = "example-token"
 
-sni_router = true
-sni_listen_addr = "0.0.0.0:443"
-sni_inspect_timeout = 1
-sni_default_action = "reject"
-
-sni_routes = [
-  { sni = "myket.ir", target = "10001" },
-  { sni = "cafebazaar.ir", target = "10002" },
-  { sni = "telewebion.ir", target = "10003" }
+[[sni_gateway]]
+name = "PUBLIC-443"
+listen_addr = "0.0.0.0:443"
+routes = [
+  { sni = "a.com", server = "TR1", target = "443" }
 ]
 ```
-
-Here the server listens only on `0.0.0.0:443` and `raw_ports` is omitted
-entirely. A TLS connection with SNI `myket.ir` enters the tunnel with target
-`10001`, `cafebazaar.ir` with `10002`, and `telewebion.ir` with `10003`. No
-listener is opened on 10001/10002/10003.
-
-#### Example 3: raw forwarding + SNI router
-
-```toml
-[[server]]
-name = "mixed-example"
-bind_addr = "0.0.0.0:30000"
-transport = "tcpmux"
-token = "example-token"
-
-raw_ports = [
-  "20000-20100"
-]
-
-sni_router = true
-sni_listen_addr = "0.0.0.0:443"
-sni_inspect_timeout = 1
-sni_default_action = "reject"
-
-sni_routes = [
-  { sni = "myket.ir", target = "10001" },
-  { sni = "cafebazaar.ir", target = "10002" },
-  { sni = "telewebion.ir", target = "10003" }
-]
-```
-
-`raw_ports` handles real raw forwarding (20000–20100) while `sni_routes` routes
-TLS connections on `:443` by SNI — completely independent of `raw_ports`.
 
 ### Transport support
 
-The SNI router is transport-agnostic and works with every stream-based
-transport: `tcp`, `tcpmux`, `ws`, `wss`, `wsmux`, `wssmux`, and `quic` (its
-local TCP inbound path). It feeds routed connections into the same internal
-pipeline as raw port forwarding.
-
-The `udp` transport is the only exception: it only carries real UDP datagrams
-and cannot transport a TCP/TLS inbound stream. Enabling `sni_router` with
-`transport = "udp"` is rejected at startup with a clear error.
+SNI gateways are transport-agnostic and dispatch to any stream-based transport:
+`tcp`, `tcpmux`, `ws`, `wss`, `wsmux`, `wssmux`, and `quic`. The `udp` transport
+is the only exception — it carries real UDP datagrams and cannot serve a TCP/TLS
+stream — so a route pointing at a `udp` server is rejected at startup.
 
 ### Validation rules
 
-A server entry is rejected at startup if:
+Configuration is validated before any listener starts. It is rejected if:
 
-* it has neither `raw_ports` nor `sni_router` (no user-facing inbound);
-* `sni_router = true` but `sni_listen_addr` is empty;
-* `sni_router = true` but `sni_routes` is empty;
-* `sni_default_action` is set to anything other than `reject`;
-* `transport = "udp"` is combined with `sni_router = true`;
-* it still uses the removed `ports` field.
+* a `[[server]]` has an empty `name`, or two servers share the same `name`;
+* a server has neither `ports` nor any `[[sni_gateway]]` route referencing it
+  (`no inbound configured for server "TR1": set ports or reference it from [[sni_gateway]].routes`);
+* a `ports` entry has an invalid format;
+* two servers bind the same port
+  (`duplicate port listener "0.0.0.0:64335" used by both server "TR1" and server "US1"`);
+* a `[[sni_gateway]]` has an empty `listen_addr`;
+* two gateways share the same `listen_addr`;
+* a gateway `listen_addr` collides with a server `ports` listener (including
+  wildcard/specific-IP overlaps such as `0.0.0.0:443` vs `127.0.0.1:443`);
+* a route is missing `sni`, `server`, or `target`;
+* two routes in the same gateway resolve to the same normalized SNI;
+* a route references an unknown server
+  (`sni_gateway "PUBLIC-443" route for "example.com" references unknown server "TR2"`);
+* a route references a `udp` server;
+* `default_action` is set to anything other than `reject`;
+* the config still uses the removed `raw_ports` or per-server `sni_*` fields.
+
+> SNIs may repeat across gateways that listen on **different** `listen_addr`
+> values (separate public entrypoints), but the `listen_addr` itself must be
+> unique, which also prevents two gateways from sharing one public port.
 
 ## Generating a Self-Signed TLS Certificate with OpenSSL
 

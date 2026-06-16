@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codeTide/BackhaulPlus/internal/utils"
@@ -29,6 +30,7 @@ type TcpTransport struct {
 	restartMutex   sync.Mutex
 	usageMonitor   *web.Usage
 	rtt            int64 // in ms, for UDP
+	ready          atomic.Bool
 }
 
 type TcpConfig struct {
@@ -36,7 +38,7 @@ type TcpConfig struct {
 	Token        string
 	SnifferLog   string
 	TunnelStatus string
-	RawPorts     []string
+	Ports        []string
 	Nodelay      bool
 	Sniffer      bool
 	KeepAlive    time.Duration
@@ -45,12 +47,6 @@ type TcpConfig struct {
 	WebPort      int
 	AcceptUDP    bool
 	AllowMultiIP bool
-
-	SNIRouter         bool
-	SNIListenAddr     string
-	SNIInspectTimeout time.Duration
-	SNIDefaultAction  string
-	SNIRoutes         map[string]string
 }
 
 func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {
@@ -97,10 +93,6 @@ func (s *TcpTransport) Start() {
 		go s.parsePortMappings()
 		go s.channelHandler()
 
-		if s.config.SNIRouter {
-			go s.startSNIRouter()
-		}
-
 		s.logger.Infof("starting %d handle loops on each CPU thread", numCPU)
 
 		for i := 0; i < numCPU; i++ {
@@ -143,6 +135,7 @@ func (s *TcpTransport) Restart() {
 	s.usageMonitor = web.NewDataStore(fmt.Sprintf(":%v", s.config.WebPort), ctx, s.config.SnifferLog, s.config.Sniffer, &s.config.TunnelStatus, s.logger)
 	s.config.TunnelStatus = ""
 	s.controlChannel = nil
+	s.ready.Store(false)
 
 	// set the log level again
 	s.logger.SetLevel(level)
@@ -195,6 +188,7 @@ func (s *TcpTransport) channelHandshake() {
 			}
 
 			s.controlChannel = conn
+			s.ready.Store(true)
 
 			s.logger.Info("control channel successfully established.")
 			return
@@ -353,20 +347,22 @@ func (s *TcpTransport) acceptTunnelConn(listener net.Listener) {
 	}
 }
 
-// startSNIRouter starts the transport-agnostic SNI router, feeding routed
-// connections into this transport's local pipeline via enqueueInbound.
-func (s *TcpTransport) startSNIRouter() {
-	StartSNIRouter(s.ctx, SNIRouterConfig{
-		ListenAddr:     s.config.SNIListenAddr,
-		InspectTimeout: s.config.SNIInspectTimeout,
-		DefaultAction:  s.config.SNIDefaultAction,
-		Routes:         s.config.SNIRoutes,
-	}, s.logger, s.enqueueInbound)
+// IsReady reports whether the control channel is established.
+func (s *TcpTransport) IsReady() bool { return s.ready.Load() }
+
+// EnqueueInbound implements InboundTarget so an SNI gateway can dispatch a
+// connection into this runtime. It refuses connections until the runtime is
+// ready.
+func (s *TcpTransport) EnqueueInbound(conn net.Conn, target string, reportPort int) bool {
+	if !s.ready.Load() {
+		return false
+	}
+	return s.enqueueInbound(conn, target, reportPort)
 }
 
 // enqueueInbound delivers an inbound connection into the local pipeline. It
-// mirrors the behaviour of acceptLocalConn so raw_ports and the SNI router
-// share the same handoff path. Returns false if the channel is full.
+// mirrors the behaviour of acceptLocalConn so ports listeners and the SNI
+// gateway share the same handoff path. Returns false if the channel is full.
 func (s *TcpTransport) enqueueInbound(conn net.Conn, target string, reportPort int) bool {
 	select {
 	case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: target, timeCreated: time.Now().UnixMilli(), reportPort: reportPort}:
@@ -382,7 +378,7 @@ func (s *TcpTransport) enqueueInbound(conn net.Conn, target string, reportPort i
 }
 
 func (s *TcpTransport) parsePortMappings() {
-	for _, portMapping := range s.config.RawPorts {
+	for _, portMapping := range s.config.Ports {
 		parts := strings.Split(portMapping, "=")
 
 		var localAddr, remoteAddr string

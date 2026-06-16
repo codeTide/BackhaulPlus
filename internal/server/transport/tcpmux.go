@@ -39,6 +39,7 @@ type TcpMuxTransport struct {
 	extraCtrlMu      sync.Mutex
 	extraCtrlConns   []net.Conn
 	rrControlIdx     int
+	ready            atomic.Bool
 }
 
 type TcpMuxConfig struct {
@@ -46,7 +47,7 @@ type TcpMuxConfig struct {
 	TunnelStatus     string
 	SnifferLog       string
 	Token            string
-	RawPorts         []string
+	Ports            []string
 	Nodelay          bool
 	Sniffer          bool
 	ChannelSize      int
@@ -59,12 +60,6 @@ type TcpMuxConfig struct {
 	KeepAlive        time.Duration
 	Heartbeat        time.Duration // in seconds
 	AllowMultiIP     bool
-
-	SNIRouter         bool
-	SNIListenAddr     string
-	SNIInspectTimeout time.Duration
-	SNIDefaultAction  string
-	SNIRoutes         map[string]string
 }
 
 func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -122,10 +117,6 @@ func (s *TcpMuxTransport) Start() {
 		go s.parsePortMappings()
 		go s.channelHandler()
 
-		if s.config.SNIRouter {
-			go s.startSNIRouter()
-		}
-
 		s.logger.Infof("starting %d handle loops on each CPU thread", numCPU)
 
 		for i := 0; i < numCPU; i++ {
@@ -174,6 +165,7 @@ func (s *TcpMuxTransport) Restart() {
 	s.reqNewConnChan = make(chan struct{}, s.config.ChannelSize)
 	s.handshakeChannel = make(chan net.Conn)
 	s.controlChannel = nil
+	s.ready.Store(false)
 	s.usageMonitor = web.NewDataStore(fmt.Sprintf(":%v", s.config.WebPort), ctx, s.config.SnifferLog, s.config.Sniffer, &s.config.TunnelStatus, s.logger)
 	s.config.TunnelStatus = ""
 	s.streamCounter = 0
@@ -241,6 +233,7 @@ func (s *TcpMuxTransport) channelHandshake() {
 			}
 
 			s.controlChannel = conn
+			s.ready.Store(true)
 
 			s.logger.Info("control channel successfully established.")
 
@@ -545,19 +538,20 @@ func (s *TcpMuxTransport) broadcastHeartbeat() error {
 	return nil
 }
 
-// startSNIRouter starts the transport-agnostic SNI router for this transport.
-func (s *TcpMuxTransport) startSNIRouter() {
-	StartSNIRouter(s.ctx, SNIRouterConfig{
-		ListenAddr:     s.config.SNIListenAddr,
-		InspectTimeout: s.config.SNIInspectTimeout,
-		DefaultAction:  s.config.SNIDefaultAction,
-		Routes:         s.config.SNIRoutes,
-	}, s.logger, s.enqueueInbound)
+// IsReady reports whether the control channel is established.
+func (s *TcpMuxTransport) IsReady() bool { return s.ready.Load() }
+
+// EnqueueInbound implements InboundTarget for SNI gateway dispatch.
+func (s *TcpMuxTransport) EnqueueInbound(conn net.Conn, target string, reportPort int) bool {
+	if !s.ready.Load() {
+		return false
+	}
+	return s.enqueueInbound(conn, target, reportPort)
 }
 
 // enqueueInbound delivers an inbound connection into the local pipeline,
-// mirroring acceptLocalConn so raw_ports and the SNI router share the handoff
-// path. Returns false if the local channel is full.
+// mirroring acceptLocalConn so ports listeners and the SNI gateway share the
+// handoff path. Returns false if the local channel is full.
 func (s *TcpMuxTransport) enqueueInbound(conn net.Conn, target string, reportPort int) bool {
 	select {
 	case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: target, timeCreated: time.Now().UnixMilli(), reportPort: reportPort}:
@@ -578,7 +572,7 @@ func (s *TcpMuxTransport) enqueueInbound(conn net.Conn, target string, reportPor
 }
 
 func (s *TcpMuxTransport) parsePortMappings() {
-	for _, portMapping := range s.config.RawPorts {
+	for _, portMapping := range s.config.Ports {
 		parts := strings.Split(portMapping, "=")
 
 		var localAddr, remoteAddr string
