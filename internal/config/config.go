@@ -83,6 +83,49 @@ type SNIGatewayRoute struct {
 	Target string
 }
 
+// HTTPGatewayConfig describes a standalone, transport-agnostic HTTP gateway. It
+// opens a single public TCP listener (e.g. 0.0.0.0:443), reads the cleartext
+// HTTP/1.x request header of every connection (without terminating TLS),
+// extracts the Host header and dispatches the connection - with the inspected
+// bytes preserved - into the runtime of the target [[server]].
+//
+// It complements [[sni_gateway]]: SNI gateways route encrypted TLS by their
+// ClientHello SNI, while HTTP gateways route cleartext HTTP/XHTTP by their Host
+// header. An HTTP gateway cannot route TLS/REALITY traffic because the Host is
+// encrypted there.
+type HTTPGatewayConfig struct {
+	Name           string                   `toml:"name"`
+	ListenAddr     string                   `toml:"listen_addr"`
+	InspectTimeout int                      `toml:"inspect_timeout"`
+	MaxHeaderBytes int                      `toml:"max_header_bytes"`
+	DefaultAction  string                   `toml:"default_action"`
+	Routes         []HTTPGatewayRouteConfig `toml:"routes"`
+
+	// RouteMap is the normalized (trimmed, lowercased, port and trailing dot
+	// removed) Host -> route lookup table built during validation. It is not
+	// read from TOML.
+	RouteMap map[string]HTTPGatewayRoute `toml:"-"`
+}
+
+// HTTPGatewayRouteConfig is a single HTTP Host routing rule, expressed in TOML
+// as an inline table inside the routes array:
+//
+//	routes = [
+//	  { host = "tr.example.com", server = "TR1", target = "443" },
+//	]
+type HTTPGatewayRouteConfig struct {
+	Host   string `toml:"host"`
+	Server string `toml:"server"`
+	Target string `toml:"target"`
+}
+
+// HTTPGatewayRoute is the normalized, validated form of an HTTP routing rule.
+type HTTPGatewayRoute struct {
+	Host   string
+	Server string
+	Target string
+}
+
 // ClientConfig represents the configuration for the client.
 type ClientConfig struct {
 	Name             string        `toml:"name"`
@@ -109,9 +152,10 @@ type ClientConfig struct {
 }
 
 // Config represents the complete configuration, including server, client and
-// SNI gateway settings.
+// gateway settings.
 type Config struct {
-	Servers     []ServerConfig     `toml:"server"`
-	Clients     []ClientConfig     `toml:"client"`
-	SNIGateways []SNIGatewayConfig `toml:"sni_gateway"`
+	Servers      []ServerConfig      `toml:"server"`
+	Clients      []ClientConfig      `toml:"client"`
+	SNIGateways  []SNIGatewayConfig  `toml:"sni_gateway"`
+	HTTPGateways []HTTPGatewayConfig `toml:"http_gateway"`
 }

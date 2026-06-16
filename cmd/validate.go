@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/codeTide/BackhaulPlus/internal/config"
+	"github.com/codeTide/BackhaulPlus/internal/server/transport"
 )
 
 // validateConfig validates servers and SNI gateways, normalizes SNI route keys,
@@ -26,24 +27,27 @@ func validateConfig(cfg *config.Config) error {
 		serverByName[s.Name] = s
 	}
 
-	// 2. Validate SNI gateways and build the set of servers referenced by routes.
+	// 2. Validate gateways and build the set of servers referenced by routes.
 	referenced := make(map[string]bool)
 	if err := validateGateways(cfg, serverByName, referenced); err != nil {
 		return err
 	}
+	if err := validateHTTPGateways(cfg, serverByName, referenced); err != nil {
+		return err
+	}
 
-	// 3. Detect listener conflicts (server ports vs. server ports, and gateway
-	//    listen_addr vs. anything). This also validates the port mapping format.
+	// 3. Detect listener conflicts (server bind_addr/ports and gateway
+	//    listen_addr). This also validates the port mapping format.
 	if err := validateListeners(cfg); err != nil {
 		return err
 	}
 
 	// 4. Every server must expose some user-facing inbound: either its own
-	//    ports, or a reference from at least one sni_gateway route.
+	//    ports, or a reference from at least one gateway route.
 	for i := range cfg.Servers {
 		s := &cfg.Servers[i]
 		if len(s.Ports) == 0 && !referenced[s.Name] {
-			return fmt.Errorf("no inbound configured for server %q: set ports or reference it from [[sni_gateway]].routes", s.Name)
+			return fmt.Errorf("no inbound configured for server %q: set ports or reference it from [[sni_gateway]] or [[http_gateway]].routes", s.Name)
 		}
 	}
 
@@ -97,13 +101,71 @@ func validateGateways(cfg *config.Config, serverByName map[string]*config.Server
 	return nil
 }
 
+// HTTP gateway max_header_bytes bounds: too small cannot hold a realistic
+// request line + Host, too large invites memory abuse.
+const (
+	minHTTPMaxHeaderBytes = 128
+	maxHTTPMaxHeaderBytes = 1 << 20 // 1 MiB
+)
+
+// validateHTTPGateways validates each [[http_gateway]], normalizes its routes
+// into a lookup map and records every referenced server name.
+func validateHTTPGateways(cfg *config.Config, serverByName map[string]*config.ServerConfig, referenced map[string]bool) error {
+	for i := range cfg.HTTPGateways {
+		g := &cfg.HTTPGateways[i]
+
+		if strings.TrimSpace(g.ListenAddr) == "" {
+			return fmt.Errorf("http_gateway %q: listen_addr must not be empty", g.Name)
+		}
+		if g.DefaultAction != "reject" {
+			return fmt.Errorf("http_gateway %q: unsupported default_action %q (only \"reject\" is currently supported)", g.Name, g.DefaultAction)
+		}
+		if g.MaxHeaderBytes < minHTTPMaxHeaderBytes || g.MaxHeaderBytes > maxHTTPMaxHeaderBytes {
+			return fmt.Errorf("http_gateway %q: max_header_bytes %d out of range (must be between %d and %d)", g.Name, g.MaxHeaderBytes, minHTTPMaxHeaderBytes, maxHTTPMaxHeaderBytes)
+		}
+
+		routeMap := make(map[string]config.HTTPGatewayRoute, len(g.Routes))
+		for _, route := range g.Routes {
+			host := transport.NormalizeHTTPHost(route.Host)
+			if host == "" {
+				return fmt.Errorf("http_gateway %q: route is missing %q", g.Name, "host")
+			}
+			srv := strings.TrimSpace(route.Server)
+			if srv == "" {
+				return fmt.Errorf("http_gateway %q: route for %q is missing %q", g.Name, host, "server")
+			}
+			target := strings.TrimSpace(route.Target)
+			if target == "" {
+				return fmt.Errorf("http_gateway %q: route for %q is missing %q", g.Name, host, "target")
+			}
+			if _, ok := routeMap[host]; ok {
+				return fmt.Errorf("http_gateway %q: duplicate host route after normalization: %q", g.Name, host)
+			}
+
+			ref, ok := serverByName[srv]
+			if !ok {
+				return fmt.Errorf("http_gateway %q route for %q references unknown server %q", g.Name, host, srv)
+			}
+			if ref.Transport == config.UDP {
+				return fmt.Errorf("http_gateway %q route for %q references server %q which uses the udp transport (HTTP routing requires a TCP stream)", g.Name, host, srv)
+			}
+
+			routeMap[host] = config.HTTPGatewayRoute{Host: host, Server: srv, Target: target}
+			referenced[srv] = true
+		}
+		g.RouteMap = routeMap
+	}
+	return nil
+}
+
 // ownerKind classifies what a listen address belongs to, for conflict messages.
 type ownerKind int
 
 const (
-	ownerBind    ownerKind = iota // a server's bind_addr (tunnel listener)
-	ownerPort                     // a server's ports listener
-	ownerGateway                  // a sni_gateway listen_addr
+	ownerBind        ownerKind = iota // a server's bind_addr (tunnel listener)
+	ownerPort                         // a server's ports listener
+	ownerSNIGateway                   // a sni_gateway listen_addr
+	ownerHTTPGateway                  // a http_gateway listen_addr
 )
 
 // listenOwner identifies who owns a listen address for conflict reporting.
@@ -185,29 +247,54 @@ func validateListeners(cfg *config.Config) error {
 		}
 	}
 
-	// Gateway listen addresses.
+	// SNI gateway listen addresses.
 	for i := range cfg.SNIGateways {
 		g := &cfg.SNIGateways[i]
 		host, port, err := parseHostPort(g.ListenAddr)
 		if err != nil {
 			return fmt.Errorf("sni_gateway %q: invalid listen_addr %q: %v", g.Name, g.ListenAddr, err)
 		}
-		existing, ok := register(host, port, listenOwner{kind: ownerGateway, name: g.Name})
-		if ok {
-			continue
+		existing, ok := register(host, port, listenOwner{kind: ownerSNIGateway, name: g.Name})
+		if !ok {
+			return gatewayConflictError("sni_gateway", g.Name, formatListenAddr(host, port), existing)
 		}
-		addr := formatListenAddr(host, port)
-		switch existing.kind {
-		case ownerGateway:
-			return fmt.Errorf("duplicate sni_gateway listen_addr %q used by both sni_gateway %q and sni_gateway %q", addr, existing.name, g.Name)
-		case ownerBind:
-			return fmt.Errorf("sni_gateway %q listen_addr %q conflicts with bind_addr of server %q", g.Name, addr, existing.name)
-		default:
-			return fmt.Errorf("sni_gateway %q listen_addr %q conflicts with a ports listener of server %q", g.Name, addr, existing.name)
+	}
+
+	// HTTP gateway listen addresses.
+	for i := range cfg.HTTPGateways {
+		g := &cfg.HTTPGateways[i]
+		host, port, err := parseHostPort(g.ListenAddr)
+		if err != nil {
+			return fmt.Errorf("http_gateway %q: invalid listen_addr %q: %v", g.Name, g.ListenAddr, err)
+		}
+		existing, ok := register(host, port, listenOwner{kind: ownerHTTPGateway, name: g.Name})
+		if !ok {
+			return gatewayConflictError("http_gateway", g.Name, formatListenAddr(host, port), existing)
 		}
 	}
 
 	return nil
+}
+
+// gatewayConflictError builds a clear conflict message for a gateway listen
+// address that collides with an already-registered listener.
+func gatewayConflictError(kindLabel, name, addr string, existing listenOwner) error {
+	switch existing.kind {
+	case ownerSNIGateway:
+		if kindLabel == "sni_gateway" {
+			return fmt.Errorf("duplicate sni_gateway listen_addr %q used by both sni_gateway %q and sni_gateway %q", addr, existing.name, name)
+		}
+		return fmt.Errorf("%s %q listen_addr %q conflicts with sni_gateway %q", kindLabel, name, addr, existing.name)
+	case ownerHTTPGateway:
+		if kindLabel == "http_gateway" {
+			return fmt.Errorf("duplicate http_gateway listen_addr %q used by both http_gateway %q and http_gateway %q", addr, existing.name, name)
+		}
+		return fmt.Errorf("%s %q listen_addr %q conflicts with http_gateway %q", kindLabel, name, addr, existing.name)
+	case ownerBind:
+		return fmt.Errorf("%s %q listen_addr %q conflicts with bind_addr of server %q", kindLabel, name, addr, existing.name)
+	default: // ownerPort
+		return fmt.Errorf("%s %q listen_addr %q conflicts with a ports listener of server %q", kindLabel, name, addr, existing.name)
+	}
 }
 
 // listenAddr is a parsed (host, port) listen address.

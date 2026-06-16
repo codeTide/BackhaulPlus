@@ -19,7 +19,7 @@ Welcome to the **`BackhaulPlus`** project! This project is an enhanced fork of B
       - [Secure WebSocket Configuration](#secure-websocket-configuration)
       - [WS Multiplexing Configuration](#ws-multiplexing-configuration)
       - [WSS Multiplexing Configuration](#wss-multiplexing-configuration)
-5. [Ports and SNI Gateways](#ports-and-sni-gateways)
+5. [Ports, SNI Gateways, and HTTP Gateways](#ports-sni-gateways-and-http-gateways)
 6. [Generating a Self-Signed TLS Certificate with OpenSSL](#generating-a-self-signed-tls-certificate-with-openssl)
 7. [Running BackhaulPlus as a service](#running-backhaulplus-as-a-service)
 8. [FAQ](#faq)
@@ -121,7 +121,7 @@ To start using the solution, you'll need to configure both server and client com
 
     SNI-based routing is now configured in a standalone `[[sni_gateway]]`
     section instead of per-server fields. See
-    [Ports and SNI Gateways](#ports-and-sni-gateways) below.
+    [Ports, SNI Gateways, and HTTP Gateways](#ports-sni-gateways-and-http-gateways) below.
 
    To start the `server`:
 
@@ -510,15 +510,32 @@ To start using the solution, you'll need to configure both server and client com
 
 
 
-## Ports and SNI Gateways
+## Ports, SNI Gateways, and HTTP Gateways
 
-BackhaulPlus accepts user-facing inbound traffic in two independent ways:
+BackhaulPlus accepts user-facing inbound traffic in three independent ways:
 
 * **`ports`** on a `[[server]]` — raw TCP/UDP port forwarding into that server's
   tunnel.
 * **`[[sni_gateway]]`** — a standalone, shared public listener (e.g.
-  `0.0.0.0:443`) that routes TLS connections to the correct server purely by
-  their SNI, **without terminating TLS**.
+  `0.0.0.0:443`) that routes **encrypted TLS** connections to the correct server
+  by their ClientHello **SNI**, **without terminating TLS**.
+* **`[[http_gateway]]`** — a standalone, shared public listener that routes
+  **cleartext HTTP/1.x** connections to the correct server by their **Host**
+  header. Use this for HTTP/XHTTP that is *not* wrapped in TLS.
+
+`sni_gateway` vs `http_gateway` at a glance:
+
+| | `sni_gateway` | `http_gateway` |
+| --- | --- | --- |
+| Pre-reads | TLS ClientHello | HTTP/1.x request header |
+| Routes by | SNI | `Host` header |
+| Use for | TLS / REALITY | cleartext HTTP / XHTTP-over-HTTP |
+| Terminates TLS? | No | No |
+| Works for TLS/REALITY? | Yes | No — the Host is encrypted, use `sni_gateway` |
+
+Both gateways are transport-agnostic, preserve the first bytes they read (via
+`PrefixedConn`) and never decrypt traffic; they only differ in what plaintext
+header they parse to pick a route.
 
 > **Breaking changes**
 > - `raw_ports` has been removed; use `ports`. A config still containing
@@ -654,38 +671,130 @@ routes = [
 ]
 ```
 
+### `[[http_gateway]]`
+
+An **HTTP gateway** is the cleartext sibling of `sni_gateway`. It opens **one**
+public TCP listener, reads each connection's **cleartext HTTP/1.x request
+header** (only up to `\r\n\r\n`, never the body), extracts the **Host** header,
+and dispatches the connection — with the inspected bytes preserved and replayed
+— into the tunnel of the routed `[[server]]`. TLS is never terminated and no
+certificate is required.
+
+This is for XHTTP/HTTP setups that arrive as plain HTTP, e.g.:
+
+```http
+POST /xhttp HTTP/1.1
+Host: tr.example.com
+...
+```
+
+```http
+GET / HTTP/1.1
+host: us.example.com
+...
+```
+
+Configuration fields:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Label for this gateway, used in logs. |
+| `listen_addr` | The single public address the gateway listens on. Required, unique, and must not collide with any other listener. |
+| `inspect_timeout` | Seconds allowed to read the request header. Defaults to `1` if `<= 0`. |
+| `max_header_bytes` | Max bytes read while looking for the header terminator. Defaults to `32768`; must be between `128` and `1048576`. |
+| `default_action` | Action for unknown Hosts. Only `reject` is currently supported (default). |
+| `routes` | Array of `{ host = "...", server = "...", target = "..." }` rules. |
+
+Route fields:
+
+* `host` — the exact Host to match. Normalized (trimmed, lowercased, `:port`
+  stripped, trailing dot removed) and matched case-insensitively. So
+  `Example.COM:443` and `example.com.` both match `example.com`. No
+  wildcards/regex yet.
+* `server` — the `name` of the `[[server]]` whose tunnel receives the connection.
+* `target` — the target string sent to the external client (e.g. `"443"`). When
+  numeric, per-route traffic is reported under that port.
+
+> **Scope (v1):** `http_gateway` only supports cleartext **HTTP/1.1** (and
+> HTTP/1.0) request preread and `Host`-based routing. It does **not** support
+> TLS, REALITY, HTTPS Host routing, HTTP/2, h2c, `:authority`, or path/method
+> routing. An HTTP/2 preface (`PRI * HTTP/2.0`) is rejected. For TLS/REALITY,
+> use `[[sni_gateway]]` instead.
+
+#### Multi-server HTTP example
+
+```toml
+[[server]]
+name = "TR1"
+bind_addr = "0.0.0.0:20001"
+transport = "tcpmux"
+token = "example-token"
+
+[[server]]
+name = "US1"
+bind_addr = "0.0.0.0:20002"
+transport = "tcpmux"
+token = "example-token"
+
+[[http_gateway]]
+name = "PUBLIC-XHTTP-443"
+listen_addr = "0.0.0.0:443"
+inspect_timeout = 1
+max_header_bytes = 32768
+default_action = "reject"
+
+routes = [
+  { host = "tr.example.com", server = "TR1", target = "443" },
+  { host = "us.example.com", server = "US1", target = "443" }
+]
+```
+
+```text
+IR1:443 + HTTP Host tr.example.com → TR1 → target 443
+IR1:443 + HTTP Host us.example.com → US1 → target 443
+```
+
+`sni_gateway` and `http_gateway` are complementary and each needs its **own**
+`listen_addr`: two listeners cannot share one `IP:port`, so defining both on the
+same port is a validation error. This PR does not multiplex protocols on one
+port.
+
 ### Transport support
 
-SNI gateways are transport-agnostic and dispatch to any stream-based transport:
-`tcp`, `tcpmux`, `ws`, `wss`, `wsmux`, `wssmux`, and `quic`. The `udp` transport
-is the only exception — it carries real UDP datagrams and cannot serve a TCP/TLS
-stream — so a route pointing at a `udp` server is rejected at startup.
+Both SNI and HTTP gateways are transport-agnostic and dispatch to any
+stream-based transport: `tcp`, `tcpmux`, `ws`, `wss`, `wsmux`, `wssmux`, and
+`quic`. The `udp` transport is the only exception — it carries real UDP
+datagrams and cannot serve a TCP stream — so a route pointing at a `udp` server
+is rejected at startup.
 
 ### Validation rules
 
 Configuration is validated before any listener starts. It is rejected if:
 
 * a `[[server]]` has an empty `name`, or two servers share the same `name`;
-* a server has neither `ports` nor any `[[sni_gateway]]` route referencing it
-  (`no inbound configured for server "TR1": set ports or reference it from [[sni_gateway]].routes`);
+* a server has neither `ports` nor any `[[sni_gateway]]`/`[[http_gateway]]`
+  route referencing it
+  (`no inbound configured for server "TR1": set ports or reference it from [[sni_gateway]] or [[http_gateway]].routes`);
 * a `ports` entry has an invalid format;
-* two servers bind the same port
-  (`duplicate port listener "0.0.0.0:64335" used by both server "TR1" and server "US1"`);
-* a `[[sni_gateway]]` has an empty `listen_addr`;
-* two gateways share the same `listen_addr`;
-* a gateway `listen_addr` collides with a server `ports` listener (including
-  wildcard/specific-IP overlaps such as `0.0.0.0:443` vs `127.0.0.1:443`);
-* a route is missing `sni`, `server`, or `target`;
-* two routes in the same gateway resolve to the same normalized SNI;
+* two servers bind the same port (`duplicate port listener ...`) or the same
+  `bind_addr` (`duplicate server bind_addr ...`);
+* a `[[sni_gateway]]` or `[[http_gateway]]` has an empty `listen_addr`;
+* any two gateways share the same `listen_addr` (including one `sni_gateway` and
+  one `http_gateway`), or a gateway `listen_addr` collides with a server
+  `bind_addr` or `ports` listener — including wildcard/specific-IP overlaps such
+  as `0.0.0.0:443` vs `127.0.0.1:443`;
+* an `http_gateway` `max_header_bytes` is outside `128..1048576`;
+* a route is missing its key (`sni`/`host`), `server`, or `target`;
+* two routes in the same gateway resolve to the same normalized SNI/Host;
 * a route references an unknown server
   (`sni_gateway "PUBLIC-443" route for "example.com" references unknown server "TR2"`);
 * a route references a `udp` server;
 * `default_action` is set to anything other than `reject`;
 * the config still uses the removed `raw_ports` or per-server `sni_*` fields.
 
-> SNIs may repeat across gateways that listen on **different** `listen_addr`
-> values (separate public entrypoints), but the `listen_addr` itself must be
-> unique, which also prevents two gateways from sharing one public port.
+> The same SNI or Host may repeat across gateways that listen on **different**
+> `listen_addr` values (separate public entrypoints), but each `listen_addr`
+> must be unique, which also prevents two gateways from sharing one public port.
 
 ## Generating a Self-Signed TLS Certificate with OpenSSL
 

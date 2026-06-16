@@ -59,6 +59,14 @@ func Run(configPath string, ctx context.Context) {
 			}
 		}
 
+		// Start the HTTP gateways (cleartext HTTP/1.x Host routing).
+		for i := range cfg.HTTPGateways {
+			gw := transport.NewHTTPGateway(httpGatewayRuntimeConfig(&cfg.HTTPGateways[i]), registry, logger)
+			if err := gw.Start(ctx); err != nil {
+				logger.Fatalf("failed to start HTTP gateway: %v", err)
+			}
+		}
+
 		// Wait for shutdown signal
 		<-ctx.Done()
 		logger.Println("shutting down servers...")
@@ -136,6 +144,23 @@ func gatewayRuntimeConfig(g *config.SNIGatewayConfig) transport.GatewayConfig {
 		Name:           g.Name,
 		ListenAddr:     g.ListenAddr,
 		InspectTimeout: time.Duration(g.InspectTimeout) * time.Second,
+		DefaultAction:  g.DefaultAction,
+		Routes:         routes,
+	}
+}
+
+// httpGatewayRuntimeConfig translates a validated config.HTTPGatewayConfig into
+// the runtime gateway configuration consumed by the transport package.
+func httpGatewayRuntimeConfig(g *config.HTTPGatewayConfig) transport.HTTPGatewayConfig {
+	routes := make(map[string]transport.HTTPGatewayRoute, len(g.RouteMap))
+	for host, r := range g.RouteMap {
+		routes[host] = transport.HTTPGatewayRoute{Server: r.Server, Target: r.Target}
+	}
+	return transport.HTTPGatewayConfig{
+		Name:           g.Name,
+		ListenAddr:     g.ListenAddr,
+		InspectTimeout: time.Duration(g.InspectTimeout) * time.Second,
+		MaxHeaderBytes: g.MaxHeaderBytes,
 		DefaultAction:  g.DefaultAction,
 		Routes:         routes,
 	}

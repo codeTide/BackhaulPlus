@@ -26,6 +26,10 @@ const ( // Default values
 	// SNI gateway
 	defaultSNIInspectTimeout = 1        // seconds
 	defaultSNIDefaultAction  = "reject" // only "reject" is currently supported
+	// HTTP gateway
+	defaultHTTPInspectTimeout = 1        // seconds
+	defaultHTTPMaxHeaderBytes = 32768    // 32 KB
+	defaultHTTPDefaultAction  = "reject" // only "reject" is currently supported
 )
 
 func applyDefaults(cfg *config.Config) {
@@ -76,6 +80,19 @@ func applyDefaults(cfg *config.Config) {
 		}
 		if cfg.SNIGateways[i].DefaultAction == "" {
 			cfg.SNIGateways[i].DefaultAction = defaultSNIDefaultAction
+		}
+	}
+
+	// HTTP gateway defaults
+	for i := range cfg.HTTPGateways {
+		if cfg.HTTPGateways[i].InspectTimeout <= 0 {
+			cfg.HTTPGateways[i].InspectTimeout = defaultHTTPInspectTimeout
+		}
+		if cfg.HTTPGateways[i].MaxHeaderBytes <= 0 {
+			cfg.HTTPGateways[i].MaxHeaderBytes = defaultHTTPMaxHeaderBytes
+		}
+		if cfg.HTTPGateways[i].DefaultAction == "" {
+			cfg.HTTPGateways[i].DefaultAction = defaultHTTPDefaultAction
 		}
 	}
 
