@@ -74,4 +74,3 @@ func NewLogger(logLevel string, prefix ...string) *logrus.Logger {
 
 	return log
 }
-

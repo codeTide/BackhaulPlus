@@ -97,15 +97,25 @@ func validateGateways(cfg *config.Config, serverByName map[string]*config.Server
 	return nil
 }
 
+// ownerKind classifies what a listen address belongs to, for conflict messages.
+type ownerKind int
+
+const (
+	ownerBind    ownerKind = iota // a server's bind_addr (tunnel listener)
+	ownerPort                     // a server's ports listener
+	ownerGateway                  // a sni_gateway listen_addr
+)
+
 // listenOwner identifies who owns a listen address for conflict reporting.
 type listenOwner struct {
-	gateway bool
-	name    string
+	kind ownerKind
+	name string
 }
 
-// validateListeners parses every server's ports into concrete listen addresses,
-// rejecting invalid formats, then ensures no two listeners (server ports or
-// gateway listen_addr) collide - including wildcard/specific-IP overlaps.
+// validateListeners parses every concrete listen address opened by the config -
+// server bind_addr, server ports, and gateway listen_addr - and ensures no two
+// of them collide, including wildcard/specific-IP overlaps. Invalid ports
+// formats are rejected here too.
 func validateListeners(cfg *config.Config) error {
 	// portWildcard[port] -> owner that binds the wildcard address on that port.
 	portWildcard := make(map[int]listenOwner)
@@ -137,10 +147,21 @@ func validateListeners(cfg *config.Config) error {
 		return listenOwner{}, true
 	}
 
-	// Server ports first.
+	// Server bind_addr and ports first.
 	for i := range cfg.Servers {
 		s := &cfg.Servers[i]
-		owner := listenOwner{name: s.Name}
+
+		// bind_addr (the tunnel listener). Skip when empty/unparseable; the
+		// runtime surfaces a malformed bind_addr on its own.
+		if host, port, err := parseHostPort(s.BindAddr); err == nil {
+			existing, ok := register(host, port, listenOwner{kind: ownerBind, name: s.Name})
+			if !ok && existing.name != s.Name {
+				addr := formatListenAddr(host, port)
+				return fmt.Errorf("duplicate server bind_addr %q used by both server %q and server %q", addr, existing.name, s.Name)
+			}
+		}
+
+		owner := listenOwner{kind: ownerPort, name: s.Name}
 		for _, pm := range s.Ports {
 			addrs, err := portMappingListenAddrs(pm)
 			if err != nil {
@@ -151,10 +172,11 @@ func validateListeners(cfg *config.Config) error {
 				if ok {
 					continue
 				}
-				// Overlap within the same server (e.g. illustrative mappings that
-				// reuse a port) is left to the runtime to surface as a real bind
-				// error; only cross-server collisions are rejected here.
-				if !existing.gateway && existing.name == s.Name {
+				// Overlaps within the same server (e.g. illustrative mappings
+				// that reuse a port, or ports that coincide with bind_addr) are
+				// left to the runtime to surface as a real bind error; only
+				// cross-server collisions are rejected here.
+				if existing.name == s.Name {
 					continue
 				}
 				addr := formatListenAddr(a.host, a.port)
@@ -170,16 +192,19 @@ func validateListeners(cfg *config.Config) error {
 		if err != nil {
 			return fmt.Errorf("sni_gateway %q: invalid listen_addr %q: %v", g.Name, g.ListenAddr, err)
 		}
-		owner := listenOwner{gateway: true, name: g.Name}
-		existing, ok := register(host, port, owner)
+		existing, ok := register(host, port, listenOwner{kind: ownerGateway, name: g.Name})
 		if ok {
 			continue
 		}
 		addr := formatListenAddr(host, port)
-		if existing.gateway {
+		switch existing.kind {
+		case ownerGateway:
 			return fmt.Errorf("duplicate sni_gateway listen_addr %q used by both sni_gateway %q and sni_gateway %q", addr, existing.name, g.Name)
+		case ownerBind:
+			return fmt.Errorf("sni_gateway %q listen_addr %q conflicts with bind_addr of server %q", g.Name, addr, existing.name)
+		default:
+			return fmt.Errorf("sni_gateway %q listen_addr %q conflicts with a ports listener of server %q", g.Name, addr, existing.name)
 		}
-		return fmt.Errorf("sni_gateway %q listen_addr %q conflicts with a ports listener of server %q", g.Name, addr, existing.name)
 	}
 
 	return nil

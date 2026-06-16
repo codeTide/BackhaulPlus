@@ -550,8 +550,8 @@ func (s *TcpMuxTransport) EnqueueInbound(conn net.Conn, target string, reportPor
 }
 
 // enqueueInbound delivers an inbound connection into the local pipeline,
-// mirroring acceptLocalConn so raw_ports and the SNI router share the handoff
-// path. Returns false if the local channel is full.
+// mirroring acceptLocalConn so ports listeners and the SNI gateway share the
+// handoff path. Returns false if the local channel is full.
 func (s *TcpMuxTransport) enqueueInbound(conn net.Conn, target string, reportPort int) bool {
 	select {
 	case s.localChannel <- LocalTCPConn{conn: conn, remoteAddr: target, timeCreated: time.Now().UnixMilli(), reportPort: reportPort}:

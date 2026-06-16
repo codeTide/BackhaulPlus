@@ -160,7 +160,7 @@ func TestPortFromTarget(t *testing.T) {
 	}
 }
 
-// --- SNI router tests --------------------------------------------------------
+// --- shared network test helpers --------------------------------------------
 
 func freeAddr(t *testing.T) string {
 	t.Helper()
@@ -182,7 +182,7 @@ func dialWithRetry(t *testing.T, addr string) net.Conn {
 			return conn
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("failed to dial SNI router at %s: %v", addr, err)
+			t.Fatalf("failed to dial %s: %v", addr, err)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

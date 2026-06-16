@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"time"
 
@@ -47,15 +48,17 @@ func NewGateway(cfg GatewayConfig, registry *Registry, logger *logrus.Logger) *G
 	return &Gateway{config: cfg, registry: registry, logger: logger}
 }
 
-// Start opens the public listener and serves connections until ctx is cancelled.
-// The listener is bound to ctx so it is released on shutdown/hot reload, letting
-// a fresh gateway re-bind the same port without "address already in use".
-func (g *Gateway) Start(ctx context.Context) {
+// Start binds the public listener synchronously and, on success, serves
+// connections in a background goroutine until ctx is cancelled. It returns an
+// error if the listener cannot be bound so the caller can fail fast instead of
+// leaving the public SNI entrypoint silently down. The listener is bound to ctx
+// so it is released on shutdown/hot reload, letting a fresh gateway re-bind the
+// same port without "address already in use".
+func (g *Gateway) Start(ctx context.Context) error {
 	lc := net.ListenConfig{}
 	listener, err := lc.Listen(ctx, "tcp", g.config.ListenAddr)
 	if err != nil {
-		g.logger.Errorf("sni_gateway %q failed to listen on %s: %v", g.config.Name, g.config.ListenAddr, err)
-		return
+		return fmt.Errorf("sni_gateway %q failed to listen on %s: %w", g.config.Name, g.config.ListenAddr, err)
 	}
 
 	g.logger.Infof("sni_gateway %q listening on %s with %d routes", g.config.Name, g.config.ListenAddr, len(g.config.Routes))
@@ -65,6 +68,14 @@ func (g *Gateway) Start(ctx context.Context) {
 		_ = listener.Close()
 	}()
 
+	go g.acceptLoop(ctx, listener)
+
+	return nil
+}
+
+// acceptLoop accepts connections until ctx is cancelled. Accept errors that are
+// not caused by shutdown are logged at debug level and the loop continues.
+func (g *Gateway) acceptLoop(ctx context.Context, listener net.Listener) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {

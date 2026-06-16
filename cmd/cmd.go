@@ -54,7 +54,9 @@ func Run(configPath string, ctx context.Context) {
 		// the external clients connect.
 		for i := range cfg.SNIGateways {
 			gw := transport.NewGateway(gatewayRuntimeConfig(&cfg.SNIGateways[i]), registry, logger)
-			go gw.Start(ctx)
+			if err := gw.Start(ctx); err != nil {
+				logger.Fatalf("failed to start SNI gateway: %v", err)
+			}
 		}
 
 		// Wait for shutdown signal

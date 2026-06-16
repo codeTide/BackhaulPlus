@@ -5,8 +5,8 @@ import (
 	"io"
 	"net"
 
-	"github.com/gorilla/websocket"
 	"github.com/codeTide/BackhaulPlus/internal/web"
+	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
 

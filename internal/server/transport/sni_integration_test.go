@@ -65,8 +65,44 @@ func newTestGateway(t *testing.T, routes map[string]GatewayRoute, reg *Registry)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go gw.Start(ctx)
+	if err := gw.Start(ctx); err != nil {
+		t.Fatalf("gateway failed to start: %v", err)
+	}
 	return addr
+}
+
+// TestGateway_BindFailureReturnsError verifies that Start fails fast (returns an
+// error) when its listen address is already taken, instead of logging and
+// silently leaving the public entrypoint down.
+func TestGateway_BindFailureReturnsError(t *testing.T) {
+	logger := logrus.New()
+	logger.SetLevel(logrus.PanicLevel)
+
+	// Occupy an address so the gateway cannot bind it.
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to occupy address: %v", err)
+	}
+	defer occupied.Close()
+	addr := occupied.Addr().String()
+
+	reg := NewRegistry()
+	reg.Register("TR1", &mockTarget{ready: true, enqueueOK: true})
+
+	gw := NewGateway(GatewayConfig{
+		Name:           "PUBLIC",
+		ListenAddr:     addr,
+		InspectTimeout: time.Second,
+		DefaultAction:  "reject",
+		Routes:         map[string]GatewayRoute{"a.com": {Server: "TR1", Target: "443"}},
+	}, reg, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := gw.Start(ctx); err == nil {
+		t.Fatal("expected Start to return an error when the address is already in use")
+	}
 }
 
 // TestGateway_DispatchToServer verifies that a ClientHello is routed to the

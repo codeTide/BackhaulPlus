@@ -398,6 +398,47 @@ routes = [
 	}
 }
 
+func TestConfig_GatewayBindAddrConflict(t *testing.T) {
+	for _, bind := range []string{"0.0.0.0:443", "127.0.0.1:443"} {
+		content := `
+[[server]]
+name = "TR1"
+bind_addr = "` + bind + `"
+transport = "tcpmux"
+ports = ["64335"]
+
+[[sni_gateway]]
+name = "PUBLIC-443"
+listen_addr = "0.0.0.0:443"
+routes = [ { sni = "a.com", server = "TR1", target = "443" } ]
+`
+		err := loadAndValidate(t, content)
+		if err == nil || !strings.Contains(err.Error(), "bind_addr of server") {
+			t.Fatalf("expected gateway/bind_addr conflict for bind %s, got: %v", bind, err)
+		}
+	}
+}
+
+func TestConfig_DuplicateBindAddrBetweenServers(t *testing.T) {
+	content := `
+[[server]]
+name = "TR1"
+bind_addr = "0.0.0.0:20001"
+transport = "tcpmux"
+ports = ["64335"]
+
+[[server]]
+name = "US1"
+bind_addr = "0.0.0.0:20001"
+transport = "tcpmux"
+ports = ["64336"]
+`
+	err := loadAndValidate(t, content)
+	if err == nil || !strings.Contains(err.Error(), "duplicate server bind_addr") {
+		t.Fatalf("expected duplicate bind_addr error, got: %v", err)
+	}
+}
+
 func TestConfig_InvalidPortFormatRejected(t *testing.T) {
 	content := baseServer + `
 ports = ["not-a-port"]
