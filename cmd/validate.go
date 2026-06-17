@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -51,7 +52,81 @@ func validateConfig(cfg *config.Config) error {
 		}
 	}
 
+	// 5. Parse client-side tunnel TCP buffer sizes into their runtime value.
+	for i := range cfg.Clients {
+		c := &cfg.Clients[i]
+		bytes, err := parseTunnelTCPBuffer(c.TunnelTCPBuffer)
+		if err != nil {
+			return fmt.Errorf("client %q: invalid tunnel_tcp_buffer: %v", c.Name, err)
+		}
+		c.TunnelTCPBufferBytes = bytes
+	}
+
 	return nil
+}
+
+// parseTunnelTCPBuffer parses the client-side tunnel_tcp_buffer option into a
+// byte count for use at runtime. The returned value is 0 for "auto" (leave the
+// TCP socket buffers to OS/kernel autotuning) or a positive number of bytes for
+// a fixed buffer applied equally as the read and write socket buffers.
+//
+// Accepted forms (trimmed, case-insensitive):
+//   - "auto"                  -> 0
+//   - "<n>kb"                 -> n * 1024   (positive integer n)
+//   - "<n>mb"                 -> n * 1048576 (positive integer n)
+//   - "<n>"                   -> n           (raw positive bytes)
+//
+// Zero is invalid unless the value is exactly "auto". Negative numbers,
+// decimals, gb (and other units), and values that overflow int are rejected.
+func parseTunnelTCPBuffer(value string) (int, error) {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v == "" {
+		return 0, fmt.Errorf("value must not be empty")
+	}
+	if v == "auto" {
+		return 0, nil
+	}
+
+	multiplier := 1
+	numStr := v
+	switch {
+	case strings.HasSuffix(v, "kb"):
+		multiplier = 1024
+		numStr = strings.TrimSuffix(v, "kb")
+	case strings.HasSuffix(v, "mb"):
+		multiplier = 1024 * 1024
+		numStr = strings.TrimSuffix(v, "mb")
+	}
+
+	// Only plain positive integers are accepted (no sign, no decimals, no
+	// other units). This rejects "-1", "1.5mb", "10gb", "kb", "mb", "abc".
+	if numStr == "" || !isAllDigits(numStr) {
+		return 0, fmt.Errorf("invalid value %q (use \"auto\", a positive size like \"512kb\"/\"1mb\"/\"2mb\", or raw bytes)", value)
+	}
+
+	n, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid value %q: %v", value, err)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("invalid value %q: size must be positive (use \"auto\" for OS autotuning)", value)
+	}
+
+	// Reject overflow when applying the unit multiplier.
+	if n > math.MaxInt/multiplier {
+		return 0, fmt.Errorf("invalid value %q: size is too large", value)
+	}
+	return n * multiplier, nil
+}
+
+// isAllDigits reports whether s is a non-empty string of ASCII digits only.
+func isAllDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // validateGateways validates each [[sni_gateway]], normalizes its routes into a

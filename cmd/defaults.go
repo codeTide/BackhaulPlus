@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"strings"
+
 	"github.com/codeTide/BackhaulPlus/internal/config"
 
 	"github.com/sirupsen/logrus"
@@ -23,6 +25,9 @@ const ( // Default values
 	defaultMaxStreamBuffer  = 65536   // 256KB
 	defaultSnifferLog       = "backhaul.json"
 	defaultMuxCon           = 8
+	// tcpmux tunnel TCP socket buffer (client only). "2mb" preserves the
+	// historical hardcoded behavior for configs without this option.
+	defaultTunnelTCPBuffer = "2mb"
 	// SNI gateway
 	defaultSNIInspectTimeout = 1        // seconds
 	defaultSNIDefaultAction  = "reject" // only "reject" is currently supported
@@ -133,6 +138,11 @@ func applyDefaults(cfg *config.Config) {
 		}
 		if cfg.Clients[i].DialTimeout < 1 {
 			cfg.Clients[i].DialTimeout = defaultDialTimeout
+		}
+		// Preserve the historical 2MB tunnel TCP buffer for configs that do
+		// not set tunnel_tcp_buffer (backward compatibility).
+		if strings.TrimSpace(cfg.Clients[i].TunnelTCPBuffer) == "" {
+			cfg.Clients[i].TunnelTCPBuffer = defaultTunnelTCPBuffer
 		}
 	}
 }

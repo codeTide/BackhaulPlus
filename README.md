@@ -148,11 +148,26 @@ To start using the solution, you'll need to configure both server and client com
    mux_framesize = 32768         # 32 KB. The maximum size of a frame that can be sent over a connection. (optional)
    mux_recievebuffer = 4194304   # 4 MB. The maximum buffer size for incoming data per connection. (optional)
    mux_streambuffer = 65536      # 256 KB. The maximum buffer size per individual stream within a connection. (optional)
+   tunnel_tcp_buffer = "2mb"     # tcpmux only. TCP socket buffer for tunnel connections. "auto" lets the OS/kernel autotune; "2mb" keeps the old behavior. Examples: "auto", "512kb", "1mb", "2mb", "524288". (optional, default: "2mb")
    sniffer = false               # Enable or disable network sniffing for monitoring data. (optional, default false)
    web_port = 2060               # Port number for the web interface or monitoring interface. (optional, set to 0 to disable).
    sniffer_log ="/root/log.json" # Filename used to store network traffic and usage data logs. (optional, default backhaul.json)
    log_level = "info"            # Log level ("panic", "fatal", "error", "warn", "info", "debug", "trace", optional, default: "info").
    ```
+
+   For the `tcpmux` transport, `tunnel_tcp_buffer` controls the TCP socket
+   receive/send buffer applied to each tunnel connection to the server:
+
+   * `"auto"` lets the OS/kernel autotune the TCP buffers (no explicit override).
+   * `"512kb"`, `"1mb"`, `"2mb"` set both the receive and send socket buffers to a
+     fixed size (`kb` = 1024 bytes, `mb` = 1024 × 1024 bytes). A raw byte count
+     such as `"524288"` is also accepted.
+   * `"2mb"` is the default and preserves the historical behavior. If
+     `tunnel_tcp_buffer` is omitted, the old 2MB behavior is kept, so existing
+     configs are unaffected.
+
+   On systems with many tunnel/connections and memory pressure, try
+   `tunnel_tcp_buffer = "auto"` or `tunnel_tcp_buffer = "512kb"`.
 
    You can define multiple `[[client]]` blocks in the same `config.toml` to connect one BackhaulPlus process to multiple different servers simultaneously.
 
@@ -262,6 +277,7 @@ To start using the solution, you'll need to configure both server and client com
    mux_framesize = 32768 
    mux_recievebuffer = 4194304
    mux_streambuffer = 65536 
+   tunnel_tcp_buffer = "2mb"
    sniffer = false 
    web_port = 2060
    sniffer_log = "/root/backhaul.json"
