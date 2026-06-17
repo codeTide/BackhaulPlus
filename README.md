@@ -94,6 +94,9 @@ To start using the solution, you'll need to configure both server and client com
     channel_size = 2048           # Tunnel and Local channel size. Excess connections are discarded. (optional, default: 2048).
     heartbeat = 40                # In seconds. Ping interval for tunnel stability. Min: 1s. (Optional, default: 40s)
     mux_con = 8                   # Mux concurrency. Number of connections that can be multiplexed into a single stream (optional, default: 8).
+    max_mux_sessions = 0          # Hard cap on active + pending mux tunnel sessions. 0 = unlimited (default, legacy behaviour). (optional)
+    mux_spare_sessions = 0        # Extra mux sessions kept above required capacity to absorb bursts. 0 = none (default). (optional)
+    new_conn_request_timeout = 5  # Seconds before an unanswered new-session request is reclaimed so it can be retried. (optional, default: 5)
     mux_version = 1               # SMUX protocol version (1 or 2). Version 2 may have extra features. (optional)
     mux_framesize = 32768         # 32 KB. The maximum size of a frame that can be sent over a connection. (optional)
     mux_recievebuffer = 4194304   # 4 MB. The maximum buffer size for incoming data per connection. (optional)
@@ -139,6 +142,7 @@ To start using the solution, you'll need to configure both server and client com
    transport = "tcp"             # Protocol to use ("tcp", "tcpmux", "ws", "wss", "wsmux", "wssmux". mandatory).
    token = "your_token"          # Authentication token for secure communication (optional).
    connection_pool = 8           # Number of pre-established connections.(optional, default: 8).
+   max_connection_pool = 0       # Hard cap on active + dialing tunnel sessions. 0 = unlimited (default). Must be >= connection_pool when set. (optional)
    aggressive_pool = false       # Enables aggressive connection pool management.(optional, default: false).
    keepalive_period = 75         # Interval in seconds to send keep-alive packets. (optional, default: 75s)
    nodelay = false               # Use TCP_NODELAY (optional, default: false).

@@ -36,10 +36,18 @@ type TcpMuxTransport struct {
 	restartMutex     sync.Mutex
 	streamCounter    int32
 	sessionCounter   int32
-	extraCtrlMu      sync.Mutex
-	extraCtrlConns   []net.Conn
-	rrControlIdx     int
-	ready            atomic.Bool
+	// pendingSessionRequests counts "new session" requests that have been sent
+	// to the client but whose sessions have not arrived yet. It is used to
+	// coalesce requests so a burst does not spawn an unbounded number of extra
+	// sessions.
+	pendingSessionRequests int32
+	// lastSessionRequestUnixNano records when the most recent session request
+	// was queued, so stale pending requests can be reclaimed.
+	lastSessionRequestUnixNano int64
+	extraCtrlMu                sync.Mutex
+	extraCtrlConns             []net.Conn
+	rrControlIdx               int
+	ready                      atomic.Bool
 }
 
 type TcpMuxConfig struct {
@@ -60,6 +68,15 @@ type TcpMuxConfig struct {
 	KeepAlive        time.Duration
 	Heartbeat        time.Duration // in seconds
 	AllowMultiIP     bool
+
+	// MaxMuxSessions caps active + pending mux sessions. 0 means unlimited.
+	MaxMuxSessions int
+	// MuxSpareSessions keeps a number of sessions above the strictly required
+	// capacity to absorb bursts. 0 keeps the legacy behaviour.
+	MuxSpareSessions int
+	// NewConnRequestTimeout is how long an unanswered session request may stay
+	// pending before it is reclaimed. <= 0 disables stale reclamation.
+	NewConnRequestTimeout time.Duration
 }
 
 func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -116,6 +133,7 @@ func (s *TcpMuxTransport) Start() {
 
 		go s.parsePortMappings()
 		go s.channelHandler()
+		go s.reconcilePendingRequests()
 
 		s.logger.Infof("starting %d handle loops on each CPU thread", numCPU)
 
@@ -170,6 +188,8 @@ func (s *TcpMuxTransport) Restart() {
 	s.config.TunnelStatus = ""
 	s.streamCounter = 0
 	s.sessionCounter = 0
+	atomic.StoreInt32(&s.pendingSessionRequests, 0)
+	atomic.StoreInt64(&s.lastSessionRequestUnixNano, 0)
 	s.extraCtrlConns = make([]net.Conn, 0)
 	s.rrControlIdx = 0
 
@@ -558,16 +578,123 @@ func (s *TcpMuxTransport) enqueueInbound(conn net.Conn, target string, reportPor
 		// +1 for stream counter
 		atomic.AddInt32(&s.streamCounter, 1)
 
-		if atomic.LoadInt32(&s.streamCounter) >= atomic.LoadInt32(&s.sessionCounter)*int32(s.config.MuxCon) {
-			select { // Attempt to request a new connection
-			case s.reqNewConnChan <- struct{}{}:
-			default:
-				s.logger.Warn("failed to request new connection. channel is full")
-			}
-		}
+		s.maybeRequestMuxSessions()
 		return true
 	default:
 		return false
+	}
+}
+
+// ceilDiv returns ceil(a/b) for non-negative inputs, and 0 when either input is
+// non-positive.
+func ceilDiv(a, b int) int {
+	if a <= 0 || b <= 0 {
+		return 0
+	}
+	return (a + b - 1) / b
+}
+
+// sessionRequestDeficit is the pure session-accounting calculation behind
+// maybeRequestMuxSessions. Given the current stream/session state it returns
+// how many new mux session requests should be queued. It never returns more
+// than the room left under maxSessions (0 = unlimited) and never returns a
+// negative number.
+func sessionRequestDeficit(activeStreams, activeSessions, pending, muxCon, spareSessions, maxSessions int) int {
+	if muxCon <= 0 {
+		return 0
+	}
+
+	needed := ceilDiv(activeStreams, muxCon) + spareSessions
+
+	deficit := needed - (activeSessions + pending)
+	if deficit <= 0 {
+		return 0
+	}
+
+	if maxSessions > 0 {
+		room := maxSessions - (activeSessions + pending)
+		if room <= 0 {
+			return 0
+		}
+		if deficit > room {
+			deficit = room
+		}
+	}
+
+	return deficit
+}
+
+// maybeRequestMuxSessions requests just enough new mux sessions to cover the
+// current stream load (plus any configured spare), while accounting for
+// sessions that are already pending and never exceeding max_mux_sessions. It is
+// safe to call on every inbound connection: when nothing new is needed it does
+// no work.
+func (s *TcpMuxTransport) maybeRequestMuxSessions() {
+	deficit := sessionRequestDeficit(
+		int(atomic.LoadInt32(&s.streamCounter)),
+		int(atomic.LoadInt32(&s.sessionCounter)),
+		int(atomic.LoadInt32(&s.pendingSessionRequests)),
+		s.config.MuxCon,
+		s.config.MuxSpareSessions,
+		s.config.MaxMuxSessions,
+	)
+
+	for i := 0; i < deficit; i++ {
+		if !s.tryQueueNewSessionRequest() {
+			break
+		}
+	}
+}
+
+// tryQueueNewSessionRequest reserves a pending slot and enqueues a single new
+// session request. It returns false (and releases the reservation) when the
+// request channel is full, so callers can stop early. Logging is kept at debug
+// level because this can be hit thousands of times per second under load.
+func (s *TcpMuxTransport) tryQueueNewSessionRequest() bool {
+	atomic.AddInt32(&s.pendingSessionRequests, 1)
+
+	select {
+	case s.reqNewConnChan <- struct{}{}:
+		atomic.StoreInt64(&s.lastSessionRequestUnixNano, time.Now().UnixNano())
+		return true
+	default:
+		atomic.AddInt32(&s.pendingSessionRequests, -1)
+		s.logger.Debug("new mux session request skipped: reqNewConnChan full")
+		return false
+	}
+}
+
+// reconcilePendingRequests periodically reclaims pending session requests that
+// were never answered within new_conn_request_timeout, so a lost request can no
+// longer block future requests forever. Disabled when the timeout is <= 0.
+func (s *TcpMuxTransport) reconcilePendingRequests() {
+	if s.config.NewConnRequestTimeout <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			if atomic.LoadInt32(&s.pendingSessionRequests) <= 0 {
+				continue
+			}
+			last := atomic.LoadInt64(&s.lastSessionRequestUnixNano)
+			if last == 0 {
+				continue
+			}
+			if time.Since(time.Unix(0, last)) > s.config.NewConnRequestTimeout {
+				// Conservatively clear the pending counter. Pending only guards
+				// against over-requesting; resetting it at most allows a few
+				// extra requests, which maybeRequestMuxSessions then re-bounds.
+				atomic.StoreInt32(&s.pendingSessionRequests, 0)
+				s.logger.Debug("reclaimed stale pending mux session requests")
+			}
+		}
 	}
 }
 
@@ -727,17 +854,31 @@ func (s *TcpMuxTransport) handleLoop() {
 			return
 
 		case session := <-s.tunnelChannel:
-			// +1 for session counter
+			// A requested session has arrived: release one pending slot (if any)
+			// and account for the now-active session.
+			if atomic.LoadInt32(&s.pendingSessionRequests) > 0 {
+				atomic.AddInt32(&s.pendingSessionRequests, -1)
+			}
 			atomic.AddInt32(&s.sessionCounter, 1)
 
-			go s.handleSession(session)
+			go func(sess *smux.Session) {
+				// Single, authoritative place where a session's lifetime ends:
+				// decrement exactly once, close the session, and re-evaluate
+				// whether replacements are needed. handleSession must not touch
+				// sessionCounter itself, to avoid drift or double-decrement.
+				defer func() {
+					atomic.AddInt32(&s.sessionCounter, -1)
+					_ = sess.Close()
+					s.maybeRequestMuxSessions()
+				}()
+				s.handleSession(sess)
+			}(session)
 		}
 	}
 }
 
 func (s *TcpMuxTransport) handleSession(session *smux.Session) {
 	counter := make(chan struct{}, s.config.MuxCon)
-	defer session.Close()
 	defer close(counter)
 
 	for {
@@ -786,16 +927,9 @@ func (s *TcpMuxTransport) handleSession(session *smux.Session) {
 func (s *TcpMuxTransport) handleSessionError(incomingConn *LocalTCPConn, err error) {
 	s.logger.Tracef("failed to handle session: %v", err)
 
-	// decrease session value
-	atomic.AddInt32(&s.sessionCounter, -1)
-
-	// Put local connection back to local channel
+	// Put the local connection back so another session can serve it. The
+	// session counter is decremented by handleLoop's deferred cleanup once
+	// handleSession returns, and that same cleanup re-requests sessions as
+	// needed, so we must not adjust sessionCounter or queue requests here.
 	s.localChannel <- *incomingConn
-
-	// Attempt to request a new connection
-	select {
-	case s.reqNewConnChan <- struct{}{}:
-	default:
-		s.logger.Warn("request new connection channel is full")
-	}
 }
