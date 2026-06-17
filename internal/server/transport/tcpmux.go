@@ -891,26 +891,68 @@ func (s *TcpMuxTransport) handleLoop() {
 			return
 
 		case session := <-s.tunnelChannel:
-			// A requested session has arrived: release one pending slot (if any)
-			// and account for the now-active session. Use the CAS helper so
-			// concurrent handleLoop goroutines cannot drive pending negative.
-			decrementPositiveInt32(&s.pendingSessionRequests)
-			atomic.AddInt32(&s.sessionCounter, 1)
+			// Admit the session under the session-request lock: this releases
+			// any pending slot it answers and enforces max_mux_sessions as a
+			// hard cap on active server sessions. A session rejected by the cap
+			// (e.g. the client dialed more than configured) is simply closed -
+			// it never becomes active and does not trigger a restart.
+			if !s.admitMuxSession() {
+				s.logger.Debug("rejecting mux session: max_mux_sessions reached")
+				_ = session.Close()
+				continue
+			}
 
 			go func(sess *smux.Session) {
 				// Single, authoritative place where a session's lifetime ends:
-				// decrement exactly once, close the session, and re-evaluate
-				// whether replacements are needed. handleSession must not touch
-				// sessionCounter itself, to avoid drift or double-decrement.
+				// close it and release the counter exactly once via
+				// releaseMuxSession, which also re-evaluates replacements.
+				// handleSession must not touch sessionCounter itself.
 				defer func() {
-					atomic.AddInt32(&s.sessionCounter, -1)
 					_ = sess.Close()
-					s.maybeRequestMuxSessions()
+					s.releaseMuxSession()
 				}()
 				s.handleSession(sess)
 			}(session)
 		}
 	}
+}
+
+// admitMuxSession accounts for a freshly arrived mux session. It always
+// releases one pending request slot (the arrival answers a prior request, even
+// if the session is then rejected), and - when max_mux_sessions is set -
+// rejects the session if the server already holds the cap of active sessions.
+// It returns true and increments sessionCounter only when the session is
+// admitted. The whole decision is taken under sessionRequestMu so it is
+// consistent with maybeRequestMuxSessions' snapshot and safe under concurrency.
+func (s *TcpMuxTransport) admitMuxSession() bool {
+	s.sessionRequestMu.Lock()
+	defer s.sessionRequestMu.Unlock()
+
+	// The arrival answers a pending request (if one was outstanding) regardless
+	// of whether we go on to admit it, so it is no longer "pending".
+	decrementPositiveInt32(&s.pendingSessionRequests)
+
+	if s.config.MaxMuxSessions > 0 &&
+		int(atomic.LoadInt32(&s.sessionCounter)) >= s.config.MaxMuxSessions {
+		return false
+	}
+
+	atomic.AddInt32(&s.sessionCounter, 1)
+	return true
+}
+
+// releaseMuxSession accounts for an ended mux session. The counter is
+// decremented under sessionRequestMu (using the CAS helper so it can never go
+// negative even if new release paths appear), then maybeRequestMuxSessions is
+// called outside the lock - it acquires sessionRequestMu itself, so calling it
+// while holding the lock would deadlock - to re-request replacements for any
+// streams still waiting.
+func (s *TcpMuxTransport) releaseMuxSession() {
+	s.sessionRequestMu.Lock()
+	decrementPositiveInt32(&s.sessionCounter)
+	s.sessionRequestMu.Unlock()
+
+	s.maybeRequestMuxSessions()
 }
 
 func (s *TcpMuxTransport) handleSession(session *smux.Session) {
