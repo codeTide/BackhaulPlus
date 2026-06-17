@@ -44,10 +44,14 @@ type TcpMuxTransport struct {
 	// lastSessionRequestUnixNano records when the most recent session request
 	// was queued, so stale pending requests can be reclaimed.
 	lastSessionRequestUnixNano int64
-	extraCtrlMu                sync.Mutex
-	extraCtrlConns             []net.Conn
-	rrControlIdx               int
-	ready                      atomic.Bool
+	// sessionRequestMu serializes the session-request decision so concurrent
+	// callers cannot each act on a stale snapshot and collectively over-request.
+	// It guards only the deficit calculation + queueing, never data movement.
+	sessionRequestMu sync.Mutex
+	extraCtrlMu      sync.Mutex
+	extraCtrlConns   []net.Conn
+	rrControlIdx     int
+	ready            atomic.Bool
 }
 
 type TcpMuxConfig struct {
@@ -585,6 +589,23 @@ func (s *TcpMuxTransport) enqueueInbound(conn net.Conn, target string, reportPor
 	}
 }
 
+// decrementPositiveInt32 atomically decrements *p by one, but never below zero.
+// The naive "if Load>0 { Add(-1) }" pattern is not safe under concurrency:
+// multiple goroutines can each observe a positive value and all decrement,
+// driving the counter negative. The CAS loop makes the read-and-decrement
+// atomic so the counter has a hard floor of zero.
+func decrementPositiveInt32(p *int32) {
+	for {
+		old := atomic.LoadInt32(p)
+		if old <= 0 {
+			return
+		}
+		if atomic.CompareAndSwapInt32(p, old, old-1) {
+			return
+		}
+	}
+}
+
 // ceilDiv returns ceil(a/b) for non-negative inputs, and 0 when either input is
 // non-positive.
 func ceilDiv(a, b int) int {
@@ -630,6 +651,13 @@ func sessionRequestDeficit(activeStreams, activeSessions, pending, muxCon, spare
 // safe to call on every inbound connection: when nothing new is needed it does
 // no work.
 func (s *TcpMuxTransport) maybeRequestMuxSessions() {
+	// Serialize the decision so concurrent callers each see a fresh, consistent
+	// snapshot and the queued requests never collectively exceed the deficit (or
+	// max_mux_sessions). The lock covers only the cheap calculation + queueing;
+	// no data movement happens under it.
+	s.sessionRequestMu.Lock()
+	defer s.sessionRequestMu.Unlock()
+
 	deficit := sessionRequestDeficit(
 		int(atomic.LoadInt32(&s.streamCounter)),
 		int(atomic.LoadInt32(&s.sessionCounter)),
@@ -691,8 +719,17 @@ func (s *TcpMuxTransport) reconcilePendingRequests() {
 				// Conservatively clear the pending counter. Pending only guards
 				// against over-requesting; resetting it at most allows a few
 				// extra requests, which maybeRequestMuxSessions then re-bounds.
-				atomic.StoreInt32(&s.pendingSessionRequests, 0)
-				s.logger.Debug("reclaimed stale pending mux session requests")
+				// Take sessionRequestMu so the reset is consistent with the
+				// deficit decision and re-check staleness under the lock to avoid
+				// clobbering a request queued in the meantime.
+				s.sessionRequestMu.Lock()
+				last = atomic.LoadInt64(&s.lastSessionRequestUnixNano)
+				if atomic.LoadInt32(&s.pendingSessionRequests) > 0 && last != 0 &&
+					time.Since(time.Unix(0, last)) > s.config.NewConnRequestTimeout {
+					atomic.StoreInt32(&s.pendingSessionRequests, 0)
+					s.logger.Debug("reclaimed stale pending mux session requests")
+				}
+				s.sessionRequestMu.Unlock()
 			}
 		}
 	}
@@ -855,10 +892,9 @@ func (s *TcpMuxTransport) handleLoop() {
 
 		case session := <-s.tunnelChannel:
 			// A requested session has arrived: release one pending slot (if any)
-			// and account for the now-active session.
-			if atomic.LoadInt32(&s.pendingSessionRequests) > 0 {
-				atomic.AddInt32(&s.pendingSessionRequests, -1)
-			}
+			// and account for the now-active session. Use the CAS helper so
+			// concurrent handleLoop goroutines cannot drive pending negative.
+			decrementPositiveInt32(&s.pendingSessionRequests)
 			atomic.AddInt32(&s.sessionCounter, 1)
 
 			go func(sess *smux.Session) {

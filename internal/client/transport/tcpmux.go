@@ -341,8 +341,10 @@ func canDialMore(active, dialing, maxPool int) bool {
 	return active+dialing < maxPool
 }
 
-// canStartTunnelDialer reports whether a new tunnel dial may be started without
-// exceeding the configured hard cap on active + dialing tunnel sessions.
+// canStartTunnelDialer reports whether a new tunnel dial could be started under
+// the configured hard cap. It is informative only (e.g. tests, diagnostics);
+// the actual enforcement is the atomic reservation in tryReserveDialSlot, since
+// a separate check-then-increment would race under bursts.
 func (c *TcpMuxTransport) canStartTunnelDialer() bool {
 	return canDialMore(
 		int(atomic.LoadInt32(&c.poolConnections)),
@@ -351,19 +353,46 @@ func (c *TcpMuxTransport) canStartTunnelDialer() bool {
 	)
 }
 
+// tryReserveDialSlot atomically reserves a dialing slot, returning false when
+// the hard cap on active + dialing tunnels is already reached. The CAS loop
+// makes "check capacity then take a slot" a single atomic step, so concurrent
+// callers during a burst can never collectively push active + dialing above
+// max_connection_pool. MaxConnPoolSize <= 0 means unlimited (legacy behaviour).
+func (c *TcpMuxTransport) tryReserveDialSlot() bool {
+	max := c.config.MaxConnPoolSize
+
+	if max <= 0 {
+		atomic.AddInt32(&c.dialingConnections, 1)
+		return true
+	}
+
+	for {
+		active := atomic.LoadInt32(&c.poolConnections)
+		dialing := atomic.LoadInt32(&c.dialingConnections)
+
+		if int(active+dialing) >= max {
+			return false
+		}
+
+		if atomic.CompareAndSwapInt32(&c.dialingConnections, dialing, dialing+1) {
+			return true
+		}
+	}
+}
+
 // startTunnelDialer launches a tunnel dial unless the hard cap has been
 // reached. When capped, the existing connection that triggered this is left
 // untouched - only the creation of a new tunnel is skipped - and the event is
-// logged at debug level to avoid spam under sustained load. dialingConnections
-// is incremented here and released by tunnelDialer once the dial resolves, so
-// the cap counts in-flight dials without double-counting established sessions.
+// logged at debug level to avoid spam under sustained load. The dialing slot is
+// reserved atomically here and released by tunnelDialer once the dial resolves,
+// so the cap counts in-flight dials without double-counting established
+// sessions.
 func (c *TcpMuxTransport) startTunnelDialer(reason string) {
-	if !c.canStartTunnelDialer() {
+	if !c.tryReserveDialSlot() {
 		c.logger.Debugf("skip tunnel dialer: max connection pool reached, reason=%s", reason)
 		return
 	}
 
-	atomic.AddInt32(&c.dialingConnections, 1)
 	go c.tunnelDialer()
 }
 
