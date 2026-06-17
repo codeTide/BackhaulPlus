@@ -7,6 +7,7 @@ import (
 
 	"github.com/codeTide/BackhaulPlus/internal/client"
 	"github.com/codeTide/BackhaulPlus/internal/config"
+	"github.com/codeTide/BackhaulPlus/internal/maintenance"
 	"github.com/codeTide/BackhaulPlus/internal/server"
 	"github.com/codeTide/BackhaulPlus/internal/server/transport"
 	"github.com/codeTide/BackhaulPlus/internal/utils"
@@ -32,6 +33,9 @@ func Run(configPath string, ctx context.Context) {
 	if err := validateConfig(cfg); err != nil {
 		logger.Fatalf("invalid configuration: %v", err)
 	}
+
+	// Start optional process-wide runtime maintenance after validation.
+	maintenance.StartRuntimeMaintenance(cfg.Runtime, logger)
 
 	// Determine whether to run as a server or client
 	switch {

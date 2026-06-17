@@ -1,5 +1,7 @@
 package config
 
+import "time"
+
 // TransportType defines the type of transport.
 type TransportType string
 
@@ -13,6 +15,17 @@ const (
 	QUIC   TransportType = "quic"
 	UDP    TransportType = "udp"
 )
+
+// RuntimeConfig contains process-wide runtime maintenance settings. These
+// options are top-level because they affect the whole Go process, regardless of
+// whether BackhaulPlus is running server or client entries.
+type RuntimeConfig struct {
+	MemoryReleaseInterval string `toml:"memory_release_interval"`
+	AutoRestartInterval   string `toml:"auto_restart_interval"`
+
+	MemoryReleaseIntervalDuration time.Duration `toml:"-"`
+	AutoRestartIntervalDuration   time.Duration `toml:"-"`
+}
 
 // ServerConfig represents the configuration for the server.
 type ServerConfig struct {
@@ -184,6 +197,7 @@ type ClientConfig struct {
 // Config represents the complete configuration, including server, client and
 // gateway settings.
 type Config struct {
+	Runtime      RuntimeConfig       `toml:"runtime"`
 	Servers      []ServerConfig      `toml:"server"`
 	Clients      []ClientConfig      `toml:"client"`
 	SNIGateways  []SNIGatewayConfig  `toml:"sni_gateway"`

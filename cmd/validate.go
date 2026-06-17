@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codeTide/BackhaulPlus/internal/config"
 	"github.com/codeTide/BackhaulPlus/internal/server/transport"
@@ -15,7 +16,12 @@ import (
 // and detects listener conflicts before any runtime listener is started. It must
 // run after applyDefaults so the gateway defaults are already in place.
 func validateConfig(cfg *config.Config) error {
-	// 1. Server names must be non-empty and unique.
+	// 1. Validate top-level runtime maintenance durations.
+	if err := validateRuntimeConfig(cfg); err != nil {
+		return err
+	}
+
+	// 2. Server names must be non-empty and unique.
 	serverByName := make(map[string]*config.ServerConfig, len(cfg.Servers))
 	for i := range cfg.Servers {
 		s := &cfg.Servers[i]
@@ -81,6 +87,46 @@ func validateConfig(cfg *config.Config) error {
 	}
 
 	return nil
+}
+
+const (
+	minMemoryReleaseInterval = time.Second
+	minAutoRestartInterval   = time.Minute
+)
+
+func validateRuntimeConfig(cfg *config.Config) error {
+	d, err := parseOptionalDuration("memory_release_interval", cfg.Runtime.MemoryReleaseInterval, minMemoryReleaseInterval)
+	if err != nil {
+		return err
+	}
+	cfg.Runtime.MemoryReleaseIntervalDuration = d
+
+	d, err = parseOptionalDuration("auto_restart_interval", cfg.Runtime.AutoRestartInterval, minAutoRestartInterval)
+	if err != nil {
+		return err
+	}
+	cfg.Runtime.AutoRestartIntervalDuration = d
+
+	return nil
+}
+
+func parseOptionalDuration(name, value string, min time.Duration) (time.Duration, error) {
+	v := strings.TrimSpace(value)
+	if v == "" || v == "0" || v == "0s" {
+		return 0, nil
+	}
+
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", name, value, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s must be greater than 0 when enabled", name)
+	}
+	if min > 0 && d < min {
+		return 0, fmt.Errorf("%s must be at least %s when enabled", name, min)
+	}
+	return d, nil
 }
 
 // parseTunnelTCPBuffer parses the client-side tunnel_tcp_buffer option into a
