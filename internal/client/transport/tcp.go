@@ -40,6 +40,9 @@ type TcpConfig struct {
 	Nodelay        bool
 	Sniffer        bool
 	AggressivePool bool
+	// TCPCopyBuffer controls the userspace copy buffer used by TCPConnectionHandler.
+	// Default: 16KB.
+	TCPCopyBuffer int
 }
 
 func NewTCPClient(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {
@@ -375,5 +378,5 @@ func (c *TcpTransport) localDialer(tcpConn net.Conn, remoteAddr string, port int
 
 	c.logger.Debugf("connected to local address %s successfully", remoteAddr)
 
-	utils.TCPConnectionHandler(tcpConn, localConnection, c.logger, c.usageMonitor, port, c.config.Sniffer)
+	utils.TCPConnectionHandler(tcpConn, localConnection, c.logger, c.usageMonitor, port, c.config.Sniffer, c.config.TCPCopyBuffer)
 }

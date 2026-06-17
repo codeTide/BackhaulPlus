@@ -60,6 +60,9 @@ type TcpMuxConfig struct {
 	KeepAlive        time.Duration
 	Heartbeat        time.Duration // in seconds
 	AllowMultiIP     bool
+	// TCPCopyBuffer controls the userspace copy buffer used by TCPConnectionHandler.
+	// Default: 16KB.
+	TCPCopyBuffer int
 }
 
 func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -775,7 +778,7 @@ func (s *TcpMuxTransport) handleSession(session *smux.Session) {
 
 			// Handle data exchange between connections
 			go func() {
-				utils.TCPConnectionHandler(stream, incomingConn.conn, s.logger, s.usageMonitor, incomingConn.usagePort(), s.config.Sniffer)
+				utils.TCPConnectionHandler(stream, incomingConn.conn, s.logger, s.usageMonitor, incomingConn.usagePort(), s.config.Sniffer, s.config.TCPCopyBuffer)
 				atomic.AddInt32(&s.streamCounter, -1)
 				<-counter // read signal from the channel
 			}()

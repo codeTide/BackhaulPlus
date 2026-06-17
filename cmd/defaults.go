@@ -28,6 +28,10 @@ const ( // Default values
 	// tcpmux tunnel TCP socket buffer (client only). "2mb" preserves the
 	// historical hardcoded behavior for configs without this option.
 	defaultTunnelTCPBuffer = "2mb"
+	// userspace copy buffer used by TCPConnectionHandler on TCP/TCPMUX paths
+	// (server and client). "16kb" preserves the historical hardcoded behavior
+	// for configs without this option.
+	defaultTCPCopyBuffer = "16kb"
 	// SNI gateway
 	defaultSNIInspectTimeout = 1        // seconds
 	defaultSNIDefaultAction  = "reject" // only "reject" is currently supported
@@ -75,6 +79,11 @@ func applyDefaults(cfg *config.Config) {
 		}
 		if cfg.Servers[i].MuxCon < 1 {
 			cfg.Servers[i].MuxCon = defaultMuxCon
+		}
+		// Preserve the historical 16KB userspace copy buffer for configs that
+		// do not set tcp_copy_buffer (backward compatibility).
+		if strings.TrimSpace(cfg.Servers[i].TCPCopyBuffer) == "" {
+			cfg.Servers[i].TCPCopyBuffer = defaultTCPCopyBuffer
 		}
 	}
 
@@ -143,6 +152,11 @@ func applyDefaults(cfg *config.Config) {
 		// not set tunnel_tcp_buffer (backward compatibility).
 		if strings.TrimSpace(cfg.Clients[i].TunnelTCPBuffer) == "" {
 			cfg.Clients[i].TunnelTCPBuffer = defaultTunnelTCPBuffer
+		}
+		// Preserve the historical 16KB userspace copy buffer for configs that
+		// do not set tcp_copy_buffer (backward compatibility).
+		if strings.TrimSpace(cfg.Clients[i].TCPCopyBuffer) == "" {
+			cfg.Clients[i].TCPCopyBuffer = defaultTCPCopyBuffer
 		}
 	}
 }

@@ -47,6 +47,9 @@ type TcpConfig struct {
 	WebPort      int
 	AcceptUDP    bool
 	AllowMultiIP bool
+	// TCPCopyBuffer controls the userspace copy buffer used by TCPConnectionHandler.
+	// Default: 16KB.
+	TCPCopyBuffer int
 }
 
 func NewTCPServer(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {
@@ -564,7 +567,7 @@ func (s *TcpTransport) handleLoop() {
 					}
 
 					// Handle data exchange between connections
-					go utils.TCPConnectionHandler(localConn.conn, tunnelConn, s.logger, s.usageMonitor, localConn.usagePort(), s.config.Sniffer)
+					go utils.TCPConnectionHandler(localConn.conn, tunnelConn, s.logger, s.usageMonitor, localConn.usagePort(), s.config.Sniffer, s.config.TCPCopyBuffer)
 					break loop
 
 				}

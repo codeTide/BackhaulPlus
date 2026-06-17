@@ -48,18 +48,19 @@ func (s *Server) build() {
 	switch s.config.Transport {
 	case config.TCP:
 		rt := transport.NewTCPServer(s.ctx, &transport.TcpConfig{
-			BindAddr:     s.config.BindAddr,
-			Nodelay:      s.config.Nodelay,
-			KeepAlive:    time.Duration(s.config.Keepalive) * time.Second,
-			Heartbeat:    time.Duration(s.config.Heartbeat) * time.Second,
-			Token:        s.config.Token,
-			ChannelSize:  s.config.ChannelSize,
-			Ports:        s.config.Ports,
-			Sniffer:      s.config.Sniffer,
-			WebPort:      s.config.WebPort,
-			SnifferLog:   s.config.SnifferLog,
-			AcceptUDP:    s.config.AcceptUDP,
-			AllowMultiIP: s.config.AllowMultiIP,
+			BindAddr:      s.config.BindAddr,
+			Nodelay:       s.config.Nodelay,
+			KeepAlive:     time.Duration(s.config.Keepalive) * time.Second,
+			Heartbeat:     time.Duration(s.config.Heartbeat) * time.Second,
+			Token:         s.config.Token,
+			ChannelSize:   s.config.ChannelSize,
+			Ports:         s.config.Ports,
+			Sniffer:       s.config.Sniffer,
+			WebPort:       s.config.WebPort,
+			SnifferLog:    s.config.SnifferLog,
+			AcceptUDP:     s.config.AcceptUDP,
+			AllowMultiIP:  s.config.AllowMultiIP,
+			TCPCopyBuffer: s.config.TCPCopyBufferBytes,
 		}, s.logger)
 		s.runtime = rt
 		s.start = rt.Start
@@ -82,6 +83,7 @@ func (s *Server) build() {
 			WebPort:          s.config.WebPort,
 			SnifferLog:       s.config.SnifferLog,
 			AllowMultiIP:     s.config.AllowMultiIP,
+			TCPCopyBuffer:    s.config.TCPCopyBufferBytes,
 		}, s.logger)
 		s.runtime = rt
 		s.start = rt.Start
@@ -125,6 +127,7 @@ func (s *Server) build() {
 			Mode:             s.config.Transport,
 			TLSCertFile:      s.config.TLSCertFile,
 			TLSKeyFile:       s.config.TLSKeyFile,
+			TCPCopyBuffer:    s.config.TCPCopyBufferBytes,
 		}, s.logger)
 		s.runtime = rt
 		s.start = rt.Start

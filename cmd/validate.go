@@ -62,6 +62,24 @@ func validateConfig(cfg *config.Config) error {
 		c.TunnelTCPBufferBytes = bytes
 	}
 
+	// 6. Parse the userspace TCP copy buffer for servers and clients.
+	for i := range cfg.Servers {
+		s := &cfg.Servers[i]
+		bytes, err := parseTCPCopyBuffer(s.TCPCopyBuffer)
+		if err != nil {
+			return fmt.Errorf("server %q: invalid tcp_copy_buffer: %v", s.Name, err)
+		}
+		s.TCPCopyBufferBytes = bytes
+	}
+	for i := range cfg.Clients {
+		c := &cfg.Clients[i]
+		bytes, err := parseTCPCopyBuffer(c.TCPCopyBuffer)
+		if err != nil {
+			return fmt.Errorf("client %q: invalid tcp_copy_buffer: %v", c.Name, err)
+		}
+		c.TCPCopyBufferBytes = bytes
+	}
+
 	return nil
 }
 
@@ -79,12 +97,58 @@ func validateConfig(cfg *config.Config) error {
 // Zero is invalid unless the value is exactly "auto". Negative numbers,
 // decimals, gb (and other units), and values that overflow int are rejected.
 func parseTunnelTCPBuffer(value string) (int, error) {
+	if strings.ToLower(strings.TrimSpace(value)) == "auto" {
+		return 0, nil
+	}
+	return parseByteSize(value)
+}
+
+// TCP copy buffer bounds: the userspace buffer used by TCPConnectionHandler is
+// clamped between 1KB and 1MB. Too small wastes syscalls, too large defeats the
+// memory savings this option exists for.
+const (
+	minTCPCopyBuffer = 1024        // 1 KiB
+	maxTCPCopyBuffer = 1024 * 1024 // 1 MiB
+)
+
+// parseTCPCopyBuffer parses the tcp_copy_buffer option into a byte count for the
+// userspace copy buffer used by TCPConnectionHandler. Unlike tunnel_tcp_buffer,
+// it does not accept "auto" and does not allow zero: the result is always a
+// positive number of bytes in [1KB, 1MB].
+//
+// Accepted forms (trimmed, case-insensitive): "<n>kb", "<n>mb" or raw "<n>"
+// bytes. "auto", empty, zero/negative, decimals and unknown units (including
+// gb) are rejected, as are values outside the [1KB, 1MB] range.
+func parseTCPCopyBuffer(value string) (int, error) {
+	if strings.ToLower(strings.TrimSpace(value)) == "auto" {
+		return 0, fmt.Errorf("invalid value %q (\"auto\" is not supported; use a size between \"1kb\" and \"1mb\")", value)
+	}
+	n, err := parseByteSize(value)
+	if err != nil {
+		return 0, err
+	}
+	if n < minTCPCopyBuffer {
+		return 0, fmt.Errorf("invalid value %q: size must be at least %d bytes (\"1kb\")", value, minTCPCopyBuffer)
+	}
+	if n > maxTCPCopyBuffer {
+		return 0, fmt.Errorf("invalid value %q: size must be at most %d bytes (\"1mb\")", value, maxTCPCopyBuffer)
+	}
+	return n, nil
+}
+
+// parseByteSize parses a binary byte-size string with an optional kb/mb suffix
+// into a positive number of bytes. After trimming and lowercasing it accepts:
+//   - "<n>kb" -> n * 1024
+//   - "<n>mb" -> n * 1048576
+//   - "<n>"   -> n           (raw bytes)
+//
+// Only plain positive integers are accepted: empty strings, signs, decimals,
+// zero, unknown units (including gb) and int overflow are rejected. It does not
+// handle "auto"; callers that allow it must check before calling.
+func parseByteSize(value string) (int, error) {
 	v := strings.ToLower(strings.TrimSpace(value))
 	if v == "" {
 		return 0, fmt.Errorf("value must not be empty")
-	}
-	if v == "auto" {
-		return 0, nil
 	}
 
 	multiplier := 1
@@ -101,7 +165,7 @@ func parseTunnelTCPBuffer(value string) (int, error) {
 	// Only plain positive integers are accepted (no sign, no decimals, no
 	// other units). This rejects "-1", "1.5mb", "10gb", "kb", "mb", "abc".
 	if numStr == "" || !isAllDigits(numStr) {
-		return 0, fmt.Errorf("invalid value %q (use \"auto\", a positive size like \"512kb\"/\"1mb\"/\"2mb\", or raw bytes)", value)
+		return 0, fmt.Errorf("invalid value %q (use a positive size like \"512kb\"/\"1mb\" or raw bytes)", value)
 	}
 
 	n, err := strconv.Atoi(numStr)
@@ -109,7 +173,7 @@ func parseTunnelTCPBuffer(value string) (int, error) {
 		return 0, fmt.Errorf("invalid value %q: %v", value, err)
 	}
 	if n <= 0 {
-		return 0, fmt.Errorf("invalid value %q: size must be positive (use \"auto\" for OS autotuning)", value)
+		return 0, fmt.Errorf("invalid value %q: size must be positive", value)
 	}
 
 	// Reject overflow when applying the unit multiplier.

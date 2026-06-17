@@ -59,6 +59,7 @@ func (c *Client) Start() {
 			WebPort:        c.config.WebPort,
 			SnifferLog:     c.config.SnifferLog,
 			AggressivePool: c.config.AggressivePool,
+			TCPCopyBuffer:  c.config.TCPCopyBufferBytes,
 		}
 		tcpClient := transport.NewTCPClient(c.ctx, tcpConfig, c.logger)
 		go tcpClient.Start()
@@ -81,6 +82,7 @@ func (c *Client) Start() {
 			SnifferLog:       c.config.SnifferLog,
 			AggressivePool:   c.config.AggressivePool,
 			TunnelTCPBuffer:  c.config.TunnelTCPBufferBytes,
+			TCPCopyBuffer:    c.config.TCPCopyBufferBytes,
 		}
 		tcpMuxClient := transport.NewMuxClient(c.ctx, tcpMuxConfig, c.logger)
 		go tcpMuxClient.Start()
@@ -123,6 +125,7 @@ func (c *Client) Start() {
 			Mode:             c.config.Transport,
 			AggressivePool:   c.config.AggressivePool,
 			EdgeIP:           c.config.EdgeIP,
+			TCPCopyBuffer:    c.config.TCPCopyBufferBytes,
 		}
 		wsMuxClient := transport.NewWSMuxClient(c.ctx, wsMuxConfig, c.logger)
 		go wsMuxClient.Start()
