@@ -47,6 +47,10 @@ type TcpMuxConfig struct {
 	ConnPoolSize     int
 	WebPort          int
 	AggressivePool   bool
+	// TunnelTCPBuffer controls the TCP socket receive/write buffer for tcpmux tunnel connections.
+	// 0 means leave TCP socket buffers to OS/kernel autotuning.
+	// Positive values are applied equally as read and write socket buffers.
+	TunnelTCPBuffer int
 }
 
 func NewMuxClient(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -325,9 +329,22 @@ func (c *TcpMuxTransport) channelHandler() {
 func (c *TcpMuxTransport) tunnelDialer() {
 	c.logger.Debugf("initiating new tunnel connection to address %s", c.config.RemoteAddr)
 
-	// Dial to the tunnel server
-	// in case of mux we set 2M which is good for 200mbit per connection
-	tunnelConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, c.config.Nodelay, 3, 2*1024*1024, 2*1024*1024)
+	// Dial to the tunnel server.
+	// TunnelTCPBuffer controls the TCP socket receive/write buffer for tcpmux tunnel connections.
+	// 0 means leave TCP socket buffers to OS/kernel autotuning.
+	// Positive values are applied equally as read and write socket buffers
+	// (the historical default of 2MB is good for ~200mbit per connection).
+	tcpBuffer := c.config.TunnelTCPBuffer
+	tunnelConn, err := TcpDialer(
+		c.ctx,
+		c.config.RemoteAddr,
+		c.config.DialTimeOut,
+		c.config.KeepAlive,
+		c.config.Nodelay,
+		3,
+		tcpBuffer,
+		tcpBuffer,
+	)
 	if err != nil {
 		c.logger.Errorf("tunnel server dialer: %v", err)
 

@@ -149,6 +149,16 @@ type ClientConfig struct {
 	DialTimeout      int           `toml:"dial_timeout"`
 	AggressivePool   bool          `toml:"aggressive_pool"`
 	EdgeIP           string        `toml:"edge_ip"`
+
+	// TunnelTCPBuffer controls the TCP socket receive/send buffer used for
+	// tcpmux tunnel connections. It is the raw string read from TOML
+	// (e.g. "auto", "512kb", "1mb", "2mb", "524288"). Default: "2mb".
+	TunnelTCPBuffer string `toml:"tunnel_tcp_buffer"`
+	// TunnelTCPBufferBytes is the parsed, runtime-only value of
+	// TunnelTCPBuffer in bytes. 0 means leave TCP socket buffers to
+	// OS/kernel autotuning; a positive value is applied equally as the read
+	// and write socket buffers. It is not read from TOML.
+	TunnelTCPBufferBytes int `toml:"-"`
 }
 
 // Config represents the complete configuration, including server, client and
