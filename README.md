@@ -77,6 +77,23 @@ The main executable for this project is `BackhaulPlus`. It requires a TOML confi
 
 To start using the solution, you'll need to configure both server and client components. Here’s how to set up basic configurations:
 
+* **Runtime Maintenance (top-level, optional)**
+
+   These options are process-wide. They apply to the whole BackhaulPlus process, whether it is running as a client or a server, and are disabled by default unless explicitly configured.
+
+   ```toml
+   [runtime]
+   memory_release_interval = "0" # Periodically ask the runtime to release idle memory. Disabled by "0" or when omitted. Examples: "5m", "10m", "1h".
+   auto_restart_interval = "0"   # Automatically re-exec the BackhaulPlus process after this interval. Disabled by "0" or when omitted. Examples: "1h", "6h", "24h".
+   ```
+
+   Notes:
+
+   * `memory_release_interval` may reduce RSS when the Go runtime has idle heap memory, but it cannot free memory that is still actively used by live connections, goroutines, buffers, or smux sessions.
+   * Very short `memory_release_interval` values may increase CPU usage or latency because memory release forces GC work. Values below `1s` are rejected.
+   * `auto_restart_interval` re-execs the current process and drops active connections; graceful drain is not implemented for this maintenance action. Values below `1m` are rejected to avoid rapid restart loops.
+   * Both options are disabled by default and are only enabled when explicitly configured.
+
 * **Server Configuration**
 
    Create a configuration file named `config.toml`:
