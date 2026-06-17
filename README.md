@@ -98,7 +98,7 @@ To start using the solution, you'll need to configure both server and client com
     mux_framesize = 32768         # 32 KB. The maximum size of a frame that can be sent over a connection. (optional)
     mux_recievebuffer = 4194304   # 4 MB. The maximum buffer size for incoming data per connection. (optional)
     mux_streambuffer = 65536      # 256 KB. The maximum buffer size per individual stream within a connection. (optional)
-    tcp_copy_buffer = "16kb"      # Userspace buffer used by TCPConnectionHandler for TCP/TCPMUX copy paths. Lower values reduce memory under high connection counts; higher values may improve throughput. Default: "16kb".
+    tcp_copy_buffer = "16kb"      # Userspace buffer used by TCPConnectionHandler copy paths (tcp, tcpmux, wsmux/wssmux). Lower values reduce memory under high connection counts; higher values may improve throughput. Default: "16kb".
     sniffer = false               # Enable or disable network sniffing for monitoring data. (optional, default false)
     web_port = 2060               # Port number for the web interface or monitoring interface. (optional, set to 0 to disable).
     sniffer_log = "/root/log.json" # Filename used to store network traffic and usage data logs. (optional, default backhaul.json)
@@ -150,7 +150,7 @@ To start using the solution, you'll need to configure both server and client com
    mux_recievebuffer = 4194304   # 4 MB. The maximum buffer size for incoming data per connection. (optional)
    mux_streambuffer = 65536      # 256 KB. The maximum buffer size per individual stream within a connection. (optional)
    tunnel_tcp_buffer = "2mb"     # tcpmux only. TCP socket buffer for tunnel connections. "auto" lets the OS/kernel autotune; "2mb" keeps the old behavior. Examples: "auto", "512kb", "1mb", "2mb", "524288". (optional, default: "2mb")
-   tcp_copy_buffer = "16kb"      # Userspace buffer used by TCPConnectionHandler for TCP/TCPMUX copy paths. Lower values reduce memory under high connection counts; higher values may improve throughput. Default: "16kb".
+   tcp_copy_buffer = "16kb"      # Userspace buffer used by TCPConnectionHandler copy paths (tcp, tcpmux, wsmux/wssmux). Lower values reduce memory under high connection counts; higher values may improve throughput. Default: "16kb".
    sniffer = false               # Enable or disable network sniffing for monitoring data. (optional, default false)
    web_port = 2060               # Port number for the web interface or monitoring interface. (optional, set to 0 to disable).
    sniffer_log ="/root/log.json" # Filename used to store network traffic and usage data logs. (optional, default backhaul.json)
@@ -178,8 +178,10 @@ To start using the solution, you'll need to configure both server and client com
      tunnel connection.
    * `tcp_copy_buffer` is the **userspace buffer** inside `transferData` that
      `TCPConnectionHandler` uses to copy data between the tunnel/stream and the
-     local TCP connection on the `tcp` and `tcpmux` paths. It is not a kernel
-     socket buffer.
+     local TCP connection. It applies to all transport paths that use
+     `TCPConnectionHandler`, including `tcp`, `tcpmux`, and `wsmux`/`wssmux`. It
+     is not a kernel socket buffer. (Plain `ws`/`wss` use a separate WebSocket
+     handler and are not affected by this option.)
 
    Accepted values are `"1kb"`–`"1mb"` (binary units: `kb` = 1024 bytes, `mb` =
    1024 × 1024 bytes) or a raw byte count such as `"4096"`. The default is
