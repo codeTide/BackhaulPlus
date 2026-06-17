@@ -40,19 +40,6 @@ type ServerConfig struct {
 	Heartbeat        int           `toml:"heartbeat"`
 	MuxCon           int           `toml:"mux_con"`
 	AcceptUDP        bool          `toml:"accept_udp"`
-
-	// MaxMuxSessions is the hard cap on active + pending mux tunnel sessions a
-	// tcpmux server will request from the client. 0 means unlimited (the legacy
-	// behaviour).
-	MaxMuxSessions int `toml:"max_mux_sessions"`
-	// MuxSpareSessions is the number of mux sessions kept above the strictly
-	// required capacity so traffic bursts can be served without waiting for a
-	// fresh dial. 0 (the default) preserves the legacy behaviour.
-	MuxSpareSessions int `toml:"mux_spare_sessions"`
-	// NewConnRequestTimeout is the number of seconds after which an unanswered
-	// "new session" request is considered stale and reclaimed so the server can
-	// retry. 0 lets applyDefaults pick a safe value.
-	NewConnRequestTimeout int `toml:"new_conn_request_timeout"`
 }
 
 // SNIGatewayConfig describes a standalone, transport-agnostic SNI gateway. A
@@ -162,11 +149,6 @@ type ClientConfig struct {
 	DialTimeout      int           `toml:"dial_timeout"`
 	AggressivePool   bool          `toml:"aggressive_pool"`
 	EdgeIP           string        `toml:"edge_ip"`
-
-	// MaxConnectionPool is the hard cap on active + dialing tunnel sessions a
-	// tcpmux client keeps open. 0 means unlimited (the legacy behaviour). When
-	// set it must be greater than or equal to connection_pool.
-	MaxConnectionPool int `toml:"max_connection_pool"`
 }
 
 // Config represents the complete configuration, including server, client and

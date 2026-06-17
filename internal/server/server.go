@@ -82,10 +82,6 @@ func (s *Server) build() {
 			WebPort:          s.config.WebPort,
 			SnifferLog:       s.config.SnifferLog,
 			AllowMultiIP:     s.config.AllowMultiIP,
-
-			MaxMuxSessions:        s.config.MaxMuxSessions,
-			MuxSpareSessions:      s.config.MuxSpareSessions,
-			NewConnRequestTimeout: time.Duration(s.config.NewConnRequestTimeout) * time.Second,
 		}, s.logger)
 		s.runtime = rt
 		s.start = rt.Start

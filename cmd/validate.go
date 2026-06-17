@@ -42,49 +42,12 @@ func validateConfig(cfg *config.Config) error {
 		return err
 	}
 
-	// 3b. Validate the tcpmux session-management tuning knobs. These are
-	//     optional; omitting them keeps the legacy behaviour.
-	if err := validateMuxTuning(cfg); err != nil {
-		return err
-	}
-
 	// 4. Every server must expose some user-facing inbound: either its own
 	//    ports, or a reference from at least one gateway route.
 	for i := range cfg.Servers {
 		s := &cfg.Servers[i]
 		if len(s.Ports) == 0 && !referenced[s.Name] {
 			return fmt.Errorf("no inbound configured for server %q: set ports or reference it from [[sni_gateway]] or [[http_gateway]].routes", s.Name)
-		}
-	}
-
-	return nil
-}
-
-// validateMuxTuning validates the optional tcpmux session-management knobs on
-// servers and clients. A zero value always means "use the legacy default" and
-// must stay valid so existing configs keep working; only out-of-range values
-// are rejected, with a clear message.
-func validateMuxTuning(cfg *config.Config) error {
-	for i := range cfg.Servers {
-		s := &cfg.Servers[i]
-		if s.MaxMuxSessions < 0 {
-			return fmt.Errorf("server %q: max_mux_sessions must not be negative (0 means unlimited)", s.Name)
-		}
-		if s.MuxSpareSessions < 0 {
-			return fmt.Errorf("server %q: mux_spare_sessions must not be negative", s.Name)
-		}
-		if s.NewConnRequestTimeout < 0 {
-			return fmt.Errorf("server %q: new_conn_request_timeout must not be negative", s.Name)
-		}
-	}
-
-	for i := range cfg.Clients {
-		c := &cfg.Clients[i]
-		if c.MaxConnectionPool < 0 {
-			return fmt.Errorf("client %q: max_connection_pool must not be negative (0 means unlimited)", c.Name)
-		}
-		if c.MaxConnectionPool > 0 && c.MaxConnectionPool < c.ConnectionPool {
-			return fmt.Errorf("client %q: max_connection_pool must be greater than or equal to connection_pool", c.Name)
 		}
 	}
 

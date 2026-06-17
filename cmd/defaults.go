@@ -23,9 +23,6 @@ const ( // Default values
 	defaultMaxStreamBuffer  = 65536   // 256KB
 	defaultSnifferLog       = "backhaul.json"
 	defaultMuxCon           = 8
-	// defaultNewConnRequestTimeout is the number of seconds after which an
-	// unanswered tcpmux "new session" request is treated as stale and reclaimed.
-	defaultNewConnRequestTimeout = 5
 	// SNI gateway
 	defaultSNIInspectTimeout = 1        // seconds
 	defaultSNIDefaultAction  = "reject" // only "reject" is currently supported
@@ -73,11 +70,6 @@ func applyDefaults(cfg *config.Config) {
 		}
 		if cfg.Servers[i].MuxCon < 1 {
 			cfg.Servers[i].MuxCon = defaultMuxCon
-		}
-		// Only fill in a default for the unset (zero) case; negative values are
-		// left untouched so validation can reject them with a clear message.
-		if cfg.Servers[i].NewConnRequestTimeout == 0 {
-			cfg.Servers[i].NewConnRequestTimeout = defaultNewConnRequestTimeout
 		}
 	}
 
