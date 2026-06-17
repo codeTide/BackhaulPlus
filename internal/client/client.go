@@ -80,6 +80,7 @@ func (c *Client) Start() {
 			WebPort:          c.config.WebPort,
 			SnifferLog:       c.config.SnifferLog,
 			AggressivePool:   c.config.AggressivePool,
+			MaxConnPoolSize:  c.config.MaxConnectionPool,
 		}
 		tcpMuxClient := transport.NewMuxClient(c.ctx, tcpMuxConfig, c.logger)
 		go tcpMuxClient.Start()

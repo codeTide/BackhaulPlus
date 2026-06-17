@@ -36,6 +36,18 @@ type TcpMuxTransport struct {
 	restartMutex     sync.Mutex
 	streamCounter    int32
 	sessionCounter   int32
+	// pendingSessionRequests counts "new session" requests that have been sent
+	// to the client but whose sessions have not arrived yet. It is used to
+	// coalesce requests so a burst does not spawn an unbounded number of extra
+	// sessions.
+	pendingSessionRequests int32
+	// lastSessionRequestUnixNano records when the most recent session request
+	// was queued, so stale pending requests can be reclaimed.
+	lastSessionRequestUnixNano int64
+	// sessionRequestMu serializes the session-request decision so concurrent
+	// callers cannot each act on a stale snapshot and collectively over-request.
+	// It guards only the deficit calculation + queueing, never data movement.
+	sessionRequestMu sync.Mutex
 	extraCtrlMu      sync.Mutex
 	extraCtrlConns   []net.Conn
 	rrControlIdx     int
@@ -60,6 +72,15 @@ type TcpMuxConfig struct {
 	KeepAlive        time.Duration
 	Heartbeat        time.Duration // in seconds
 	AllowMultiIP     bool
+
+	// MaxMuxSessions caps active + pending mux sessions. 0 means unlimited.
+	MaxMuxSessions int
+	// MuxSpareSessions keeps a number of sessions above the strictly required
+	// capacity to absorb bursts. 0 keeps the legacy behaviour.
+	MuxSpareSessions int
+	// NewConnRequestTimeout is how long an unanswered session request may stay
+	// pending before it is reclaimed. <= 0 disables stale reclamation.
+	NewConnRequestTimeout time.Duration
 }
 
 func NewTcpMuxServer(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -116,6 +137,7 @@ func (s *TcpMuxTransport) Start() {
 
 		go s.parsePortMappings()
 		go s.channelHandler()
+		go s.reconcilePendingRequests()
 
 		s.logger.Infof("starting %d handle loops on each CPU thread", numCPU)
 
@@ -170,6 +192,8 @@ func (s *TcpMuxTransport) Restart() {
 	s.config.TunnelStatus = ""
 	s.streamCounter = 0
 	s.sessionCounter = 0
+	atomic.StoreInt32(&s.pendingSessionRequests, 0)
+	atomic.StoreInt64(&s.lastSessionRequestUnixNano, 0)
 	s.extraCtrlConns = make([]net.Conn, 0)
 	s.rrControlIdx = 0
 
@@ -558,16 +582,156 @@ func (s *TcpMuxTransport) enqueueInbound(conn net.Conn, target string, reportPor
 		// +1 for stream counter
 		atomic.AddInt32(&s.streamCounter, 1)
 
-		if atomic.LoadInt32(&s.streamCounter) >= atomic.LoadInt32(&s.sessionCounter)*int32(s.config.MuxCon) {
-			select { // Attempt to request a new connection
-			case s.reqNewConnChan <- struct{}{}:
-			default:
-				s.logger.Warn("failed to request new connection. channel is full")
-			}
-		}
+		s.maybeRequestMuxSessions()
 		return true
 	default:
 		return false
+	}
+}
+
+// decrementPositiveInt32 atomically decrements *p by one, but never below zero.
+// The naive "if Load>0 { Add(-1) }" pattern is not safe under concurrency:
+// multiple goroutines can each observe a positive value and all decrement,
+// driving the counter negative. The CAS loop makes the read-and-decrement
+// atomic so the counter has a hard floor of zero.
+func decrementPositiveInt32(p *int32) {
+	for {
+		old := atomic.LoadInt32(p)
+		if old <= 0 {
+			return
+		}
+		if atomic.CompareAndSwapInt32(p, old, old-1) {
+			return
+		}
+	}
+}
+
+// ceilDiv returns ceil(a/b) for non-negative inputs, and 0 when either input is
+// non-positive.
+func ceilDiv(a, b int) int {
+	if a <= 0 || b <= 0 {
+		return 0
+	}
+	return (a + b - 1) / b
+}
+
+// sessionRequestDeficit is the pure session-accounting calculation behind
+// maybeRequestMuxSessions. Given the current stream/session state it returns
+// how many new mux session requests should be queued. It never returns more
+// than the room left under maxSessions (0 = unlimited) and never returns a
+// negative number.
+func sessionRequestDeficit(activeStreams, activeSessions, pending, muxCon, spareSessions, maxSessions int) int {
+	if muxCon <= 0 {
+		return 0
+	}
+
+	needed := ceilDiv(activeStreams, muxCon) + spareSessions
+
+	deficit := needed - (activeSessions + pending)
+	if deficit <= 0 {
+		return 0
+	}
+
+	if maxSessions > 0 {
+		room := maxSessions - (activeSessions + pending)
+		if room <= 0 {
+			return 0
+		}
+		if deficit > room {
+			deficit = room
+		}
+	}
+
+	return deficit
+}
+
+// maybeRequestMuxSessions requests just enough new mux sessions to cover the
+// current stream load (plus any configured spare), while accounting for
+// sessions that are already pending and never exceeding max_mux_sessions. It is
+// safe to call on every inbound connection: when nothing new is needed it does
+// no work.
+func (s *TcpMuxTransport) maybeRequestMuxSessions() {
+	// Serialize the decision so concurrent callers each see a fresh, consistent
+	// snapshot and the queued requests never collectively exceed the deficit (or
+	// max_mux_sessions). The lock covers only the cheap calculation + queueing;
+	// no data movement happens under it.
+	s.sessionRequestMu.Lock()
+	defer s.sessionRequestMu.Unlock()
+
+	deficit := sessionRequestDeficit(
+		int(atomic.LoadInt32(&s.streamCounter)),
+		int(atomic.LoadInt32(&s.sessionCounter)),
+		int(atomic.LoadInt32(&s.pendingSessionRequests)),
+		s.config.MuxCon,
+		s.config.MuxSpareSessions,
+		s.config.MaxMuxSessions,
+	)
+
+	for i := 0; i < deficit; i++ {
+		if !s.tryQueueNewSessionRequest() {
+			break
+		}
+	}
+}
+
+// tryQueueNewSessionRequest reserves a pending slot and enqueues a single new
+// session request. It returns false (and releases the reservation) when the
+// request channel is full, so callers can stop early. Logging is kept at debug
+// level because this can be hit thousands of times per second under load.
+func (s *TcpMuxTransport) tryQueueNewSessionRequest() bool {
+	atomic.AddInt32(&s.pendingSessionRequests, 1)
+
+	select {
+	case s.reqNewConnChan <- struct{}{}:
+		atomic.StoreInt64(&s.lastSessionRequestUnixNano, time.Now().UnixNano())
+		return true
+	default:
+		atomic.AddInt32(&s.pendingSessionRequests, -1)
+		s.logger.Debug("new mux session request skipped: reqNewConnChan full")
+		return false
+	}
+}
+
+// reconcilePendingRequests periodically reclaims pending session requests that
+// were never answered within new_conn_request_timeout, so a lost request can no
+// longer block future requests forever. Disabled when the timeout is <= 0.
+func (s *TcpMuxTransport) reconcilePendingRequests() {
+	if s.config.NewConnRequestTimeout <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-ticker.C:
+			if atomic.LoadInt32(&s.pendingSessionRequests) <= 0 {
+				continue
+			}
+			last := atomic.LoadInt64(&s.lastSessionRequestUnixNano)
+			if last == 0 {
+				continue
+			}
+			if time.Since(time.Unix(0, last)) > s.config.NewConnRequestTimeout {
+				// Conservatively clear the pending counter. Pending only guards
+				// against over-requesting; resetting it at most allows a few
+				// extra requests, which maybeRequestMuxSessions then re-bounds.
+				// Take sessionRequestMu so the reset is consistent with the
+				// deficit decision and re-check staleness under the lock to avoid
+				// clobbering a request queued in the meantime.
+				s.sessionRequestMu.Lock()
+				last = atomic.LoadInt64(&s.lastSessionRequestUnixNano)
+				if atomic.LoadInt32(&s.pendingSessionRequests) > 0 && last != 0 &&
+					time.Since(time.Unix(0, last)) > s.config.NewConnRequestTimeout {
+					atomic.StoreInt32(&s.pendingSessionRequests, 0)
+					s.logger.Debug("reclaimed stale pending mux session requests")
+				}
+				s.sessionRequestMu.Unlock()
+			}
+		}
 	}
 }
 
@@ -727,17 +891,72 @@ func (s *TcpMuxTransport) handleLoop() {
 			return
 
 		case session := <-s.tunnelChannel:
-			// +1 for session counter
-			atomic.AddInt32(&s.sessionCounter, 1)
+			// Admit the session under the session-request lock: this releases
+			// any pending slot it answers and enforces max_mux_sessions as a
+			// hard cap on active server sessions. A session rejected by the cap
+			// (e.g. the client dialed more than configured) is simply closed -
+			// it never becomes active and does not trigger a restart.
+			if !s.admitMuxSession() {
+				s.logger.Debug("rejecting mux session: max_mux_sessions reached")
+				_ = session.Close()
+				continue
+			}
 
-			go s.handleSession(session)
+			go func(sess *smux.Session) {
+				// Single, authoritative place where a session's lifetime ends:
+				// close it and release the counter exactly once via
+				// releaseMuxSession, which also re-evaluates replacements.
+				// handleSession must not touch sessionCounter itself.
+				defer func() {
+					_ = sess.Close()
+					s.releaseMuxSession()
+				}()
+				s.handleSession(sess)
+			}(session)
 		}
 	}
 }
 
+// admitMuxSession accounts for a freshly arrived mux session. It always
+// releases one pending request slot (the arrival answers a prior request, even
+// if the session is then rejected), and - when max_mux_sessions is set -
+// rejects the session if the server already holds the cap of active sessions.
+// It returns true and increments sessionCounter only when the session is
+// admitted. The whole decision is taken under sessionRequestMu so it is
+// consistent with maybeRequestMuxSessions' snapshot and safe under concurrency.
+func (s *TcpMuxTransport) admitMuxSession() bool {
+	s.sessionRequestMu.Lock()
+	defer s.sessionRequestMu.Unlock()
+
+	// The arrival answers a pending request (if one was outstanding) regardless
+	// of whether we go on to admit it, so it is no longer "pending".
+	decrementPositiveInt32(&s.pendingSessionRequests)
+
+	if s.config.MaxMuxSessions > 0 &&
+		int(atomic.LoadInt32(&s.sessionCounter)) >= s.config.MaxMuxSessions {
+		return false
+	}
+
+	atomic.AddInt32(&s.sessionCounter, 1)
+	return true
+}
+
+// releaseMuxSession accounts for an ended mux session. The counter is
+// decremented under sessionRequestMu (using the CAS helper so it can never go
+// negative even if new release paths appear), then maybeRequestMuxSessions is
+// called outside the lock - it acquires sessionRequestMu itself, so calling it
+// while holding the lock would deadlock - to re-request replacements for any
+// streams still waiting.
+func (s *TcpMuxTransport) releaseMuxSession() {
+	s.sessionRequestMu.Lock()
+	decrementPositiveInt32(&s.sessionCounter)
+	s.sessionRequestMu.Unlock()
+
+	s.maybeRequestMuxSessions()
+}
+
 func (s *TcpMuxTransport) handleSession(session *smux.Session) {
 	counter := make(chan struct{}, s.config.MuxCon)
-	defer session.Close()
 	defer close(counter)
 
 	for {
@@ -786,16 +1005,9 @@ func (s *TcpMuxTransport) handleSession(session *smux.Session) {
 func (s *TcpMuxTransport) handleSessionError(incomingConn *LocalTCPConn, err error) {
 	s.logger.Tracef("failed to handle session: %v", err)
 
-	// decrease session value
-	atomic.AddInt32(&s.sessionCounter, -1)
-
-	// Put local connection back to local channel
+	// Put the local connection back so another session can serve it. The
+	// session counter is decremented by handleLoop's deferred cleanup once
+	// handleSession returns, and that same cleanup re-requests sessions as
+	// needed, so we must not adjust sessionCounter or queue requests here.
 	s.localChannel <- *incomingConn
-
-	// Attempt to request a new connection
-	select {
-	case s.reqNewConnChan <- struct{}{}:
-	default:
-		s.logger.Warn("request new connection channel is full")
-	}
 }

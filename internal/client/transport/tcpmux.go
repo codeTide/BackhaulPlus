@@ -26,8 +26,12 @@ type TcpMuxTransport struct {
 	usageMonitor    *web.Usage
 	restartMutex    sync.Mutex
 	poolConnections int32
-	loadConnections int32
-	controlFlow     chan struct{}
+	// dialingConnections counts tunnel dials that are in flight but have not yet
+	// become active pool connections. Counting them lets the hard cap include
+	// dials that are still being established.
+	dialingConnections int32
+	loadConnections    int32
+	controlFlow        chan struct{}
 }
 
 type TcpMuxConfig struct {
@@ -47,6 +51,10 @@ type TcpMuxConfig struct {
 	ConnPoolSize     int
 	WebPort          int
 	AggressivePool   bool
+
+	// MaxConnPoolSize caps active + dialing tunnel sessions. 0 means unlimited
+	// (the legacy behaviour).
+	MaxConnPoolSize int
 }
 
 func NewMuxClient(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -63,16 +71,17 @@ func NewMuxClient(parentCtx context.Context, config *TcpMuxConfig, logger *logru
 			MaxReceiveBuffer:  config.MaxReceiveBuffer,
 			MaxStreamBuffer:   config.MaxStreamBuffer,
 		},
-		config:          config,
-		parentctx:       parentCtx,
-		ctx:             ctx,
-		cancel:          cancel,
-		logger:          logger,
-		controlChannel:  nil, // will be set when a control connection is established
-		usageMonitor:    web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
-		poolConnections: 0,
-		loadConnections: 0,
-		controlFlow:     make(chan struct{}, 100),
+		config:             config,
+		parentctx:          parentCtx,
+		ctx:                ctx,
+		cancel:             cancel,
+		logger:             logger,
+		controlChannel:     nil, // will be set when a control connection is established
+		usageMonitor:       web.NewDataStore(fmt.Sprintf(":%v", config.WebPort), ctx, config.SnifferLog, config.Sniffer, &config.TunnelStatus, logger),
+		poolConnections:    0,
+		dialingConnections: 0,
+		loadConnections:    0,
+		controlFlow:        make(chan struct{}, 100),
 	}
 
 	return client
@@ -121,6 +130,7 @@ func (c *TcpMuxTransport) Restart() {
 	c.usageMonitor = web.NewDataStore(fmt.Sprintf(":%v", c.config.WebPort), ctx, c.config.SnifferLog, c.config.Sniffer, &c.config.TunnelStatus, c.logger)
 	c.config.TunnelStatus = ""
 	c.poolConnections = 0
+	atomic.StoreInt32(&c.dialingConnections, 0)
 	c.loadConnections = 0
 	c.controlFlow = make(chan struct{}, 100)
 
@@ -198,7 +208,7 @@ func (c *TcpMuxTransport) channelDialer() {
 
 func (c *TcpMuxTransport) poolMaintainer() {
 	for i := 0; i < c.config.ConnPoolSize; i++ { //initial pool filling
-		go c.tunnelDialer()
+		c.startTunnelDialer("initial")
 	}
 
 	// factors
@@ -248,7 +258,7 @@ func (c *TcpMuxTransport) poolMaintainer() {
 				newPoolSize++
 
 				// Add a new connection to the pool
-				go c.tunnelDialer()
+				c.startTunnelDialer("load")
 			} else if float64(loadConnections+x) < float64(poolConnectionsAvg)*y && newPoolSize > c.config.ConnPoolSize {
 				c.logger.Debugf("decreasing pool size: %d -> %d, avg pool conn: %d, avg load conn: %d", newPoolSize, newPoolSize-1, poolConnectionsAvg, loadConnections)
 				newPoolSize--
@@ -301,7 +311,7 @@ func (c *TcpMuxTransport) channelHandler() {
 
 				default:
 					c.logger.Debug("channel signal received, initiating tunnel dialer")
-					go c.tunnelDialer()
+					c.startTunnelDialer("server_request")
 				}
 
 			case utils.SG_HB:
@@ -322,6 +332,70 @@ func (c *TcpMuxTransport) channelHandler() {
 	}
 }
 
+// canDialMore is the pure cap check behind canStartTunnelDialer. maxPool <= 0
+// means unlimited; otherwise active + dialing tunnels must stay below the cap.
+func canDialMore(active, dialing, maxPool int) bool {
+	if maxPool <= 0 {
+		return true
+	}
+	return active+dialing < maxPool
+}
+
+// canStartTunnelDialer reports whether a new tunnel dial could be started under
+// the configured hard cap. It is informative only (e.g. tests, diagnostics);
+// the actual enforcement is the atomic reservation in tryReserveDialSlot, since
+// a separate check-then-increment would race under bursts.
+func (c *TcpMuxTransport) canStartTunnelDialer() bool {
+	return canDialMore(
+		int(atomic.LoadInt32(&c.poolConnections)),
+		int(atomic.LoadInt32(&c.dialingConnections)),
+		c.config.MaxConnPoolSize,
+	)
+}
+
+// tryReserveDialSlot atomically reserves a dialing slot, returning false when
+// the hard cap on active + dialing tunnels is already reached. The CAS loop
+// makes "check capacity then take a slot" a single atomic step, so concurrent
+// callers during a burst can never collectively push active + dialing above
+// max_connection_pool. MaxConnPoolSize <= 0 means unlimited (legacy behaviour).
+func (c *TcpMuxTransport) tryReserveDialSlot() bool {
+	max := c.config.MaxConnPoolSize
+
+	if max <= 0 {
+		atomic.AddInt32(&c.dialingConnections, 1)
+		return true
+	}
+
+	for {
+		active := atomic.LoadInt32(&c.poolConnections)
+		dialing := atomic.LoadInt32(&c.dialingConnections)
+
+		if int(active+dialing) >= max {
+			return false
+		}
+
+		if atomic.CompareAndSwapInt32(&c.dialingConnections, dialing, dialing+1) {
+			return true
+		}
+	}
+}
+
+// startTunnelDialer launches a tunnel dial unless the hard cap has been
+// reached. When capped, the existing connection that triggered this is left
+// untouched - only the creation of a new tunnel is skipped - and the event is
+// logged at debug level to avoid spam under sustained load. The dialing slot is
+// reserved atomically here and released by tunnelDialer once the dial resolves,
+// so the cap counts in-flight dials without double-counting established
+// sessions.
+func (c *TcpMuxTransport) startTunnelDialer(reason string) {
+	if !c.tryReserveDialSlot() {
+		c.logger.Debugf("skip tunnel dialer: max connection pool reached, reason=%s", reason)
+		return
+	}
+
+	go c.tunnelDialer()
+}
+
 func (c *TcpMuxTransport) tunnelDialer() {
 	c.logger.Debugf("initiating new tunnel connection to address %s", c.config.RemoteAddr)
 
@@ -329,13 +403,18 @@ func (c *TcpMuxTransport) tunnelDialer() {
 	// in case of mux we set 2M which is good for 200mbit per connection
 	tunnelConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, c.config.Nodelay, 3, 2*1024*1024, 2*1024*1024)
 	if err != nil {
+		// The dial is over; release its in-flight slot.
+		atomic.AddInt32(&c.dialingConnections, -1)
 		c.logger.Errorf("tunnel server dialer: %v", err)
 
 		return
 	}
 
-	// Increment active connections counter
+	// Hand off from "dialing" to "active": the connection now counts towards
+	// poolConnections (decremented by handleSession's defer) and no longer
+	// towards dialingConnections.
 	atomic.AddInt32(&c.poolConnections, 1)
+	atomic.AddInt32(&c.dialingConnections, -1)
 
 	c.handleSession(tunnelConn)
 }
