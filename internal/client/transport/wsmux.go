@@ -49,6 +49,9 @@ type WsMuxConfig struct {
 	Mode             config.TransportType
 	AggressivePool   bool
 	EdgeIP           string
+	// TCPCopyBuffer controls the userspace copy buffer used by TCPConnectionHandler.
+	// Default: 16KB.
+	TCPCopyBuffer int
 }
 
 func NewWSMuxClient(parentCtx context.Context, config *WsMuxConfig, logger *logrus.Logger) *WsMuxTransport {
@@ -363,5 +366,5 @@ func (c *WsMuxTransport) localDialer(stream *smux.Stream, remoteAddr string) {
 
 	c.logger.Debugf("connected to local address %s successfully", remoteAddr)
 
-	utils.TCPConnectionHandler(stream, localConnection, c.logger, c.usageMonitor, int(port), c.config.Sniffer)
+	utils.TCPConnectionHandler(stream, localConnection, c.logger, c.usageMonitor, int(port), c.config.Sniffer, c.config.TCPCopyBuffer)
 }

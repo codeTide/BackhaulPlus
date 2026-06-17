@@ -9,22 +9,31 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func TCPConnectionHandler(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.Usage, remotePort int, sniffer bool) {
+func TCPConnectionHandler(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.Usage, remotePort int, sniffer bool, copyBufferSize int) {
+	// Guard against an unset/invalid size so callers that have not been wired
+	// up yet keep the historical 16KB behavior.
+	if copyBufferSize <= 0 {
+		copyBufferSize = 16 * 1024
+	}
+
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
-		transferData(from, to, logger, usage, remotePort, sniffer)
+		transferData(from, to, logger, usage, remotePort, sniffer, copyBufferSize)
 	}()
 
-	transferData(to, from, logger, usage, remotePort, sniffer)
+	transferData(to, from, logger, usage, remotePort, sniffer, copyBufferSize)
 
 	<-done
 }
 
 // Using direct Read and Write for transferring data
-func transferData(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.Usage, remotePort int, sniffer bool) {
-	buf := make([]byte, 16*1024) // 16K
+func transferData(from net.Conn, to net.Conn, logger *logrus.Logger, usage *web.Usage, remotePort int, sniffer bool, copyBufferSize int) {
+	if copyBufferSize <= 0 {
+		copyBufferSize = 16 * 1024
+	}
+	buf := make([]byte, copyBufferSize)
 	for {
 		// Read data from the source connection
 		r, err := from.Read(buf)

@@ -98,6 +98,7 @@ To start using the solution, you'll need to configure both server and client com
     mux_framesize = 32768         # 32 KB. The maximum size of a frame that can be sent over a connection. (optional)
     mux_recievebuffer = 4194304   # 4 MB. The maximum buffer size for incoming data per connection. (optional)
     mux_streambuffer = 65536      # 256 KB. The maximum buffer size per individual stream within a connection. (optional)
+    tcp_copy_buffer = "16kb"      # Userspace buffer used by TCPConnectionHandler copy paths (tcp, tcpmux, wsmux/wssmux). Lower values reduce memory under high connection counts; higher values may improve throughput. Default: "16kb".
     sniffer = false               # Enable or disable network sniffing for monitoring data. (optional, default false)
     web_port = 2060               # Port number for the web interface or monitoring interface. (optional, set to 0 to disable).
     sniffer_log = "/root/log.json" # Filename used to store network traffic and usage data logs. (optional, default backhaul.json)
@@ -149,6 +150,7 @@ To start using the solution, you'll need to configure both server and client com
    mux_recievebuffer = 4194304   # 4 MB. The maximum buffer size for incoming data per connection. (optional)
    mux_streambuffer = 65536      # 256 KB. The maximum buffer size per individual stream within a connection. (optional)
    tunnel_tcp_buffer = "2mb"     # tcpmux only. TCP socket buffer for tunnel connections. "auto" lets the OS/kernel autotune; "2mb" keeps the old behavior. Examples: "auto", "512kb", "1mb", "2mb", "524288". (optional, default: "2mb")
+   tcp_copy_buffer = "16kb"      # Userspace buffer used by TCPConnectionHandler copy paths (tcp, tcpmux, wsmux/wssmux). Lower values reduce memory under high connection counts; higher values may improve throughput. Default: "16kb".
    sniffer = false               # Enable or disable network sniffing for monitoring data. (optional, default false)
    web_port = 2060               # Port number for the web interface or monitoring interface. (optional, set to 0 to disable).
    sniffer_log ="/root/log.json" # Filename used to store network traffic and usage data logs. (optional, default backhaul.json)
@@ -168,6 +170,34 @@ To start using the solution, you'll need to configure both server and client com
 
    On systems with many tunnel/connections and memory pressure, try
    `tunnel_tcp_buffer = "auto"` or `tunnel_tcp_buffer = "512kb"`.
+
+   `tcp_copy_buffer` is different from `tunnel_tcp_buffer` and applies to both
+   `[[server]]` and `[[client]]` blocks:
+
+   * `tunnel_tcp_buffer` is the **kernel TCP socket buffer** of the `tcpmux`
+     tunnel connection.
+   * `tcp_copy_buffer` is the **userspace buffer** inside `transferData` that
+     `TCPConnectionHandler` uses to copy data between the tunnel/stream and the
+     local TCP connection. It applies to all transport paths that use
+     `TCPConnectionHandler`, including `tcp`, `tcpmux`, and `wsmux`/`wssmux`. It
+     is not a kernel socket buffer. (Plain `ws`/`wss` use a separate WebSocket
+     handler and are not affected by this option.)
+
+   Accepted values are `"1kb"`–`"1mb"` (binary units: `kb` = 1024 bytes, `mb` =
+   1024 × 1024 bytes) or a raw byte count such as `"4096"`. The default is
+   `"16kb"`, which preserves the historical behavior, so existing configs are
+   unaffected. Each active connection has roughly two copy directions, so under
+   high connection counts a smaller buffer can save a lot of memory:
+
+   ```toml
+   tcp_copy_buffer = "4kb"
+   ```
+
+   or:
+
+   ```toml
+   tcp_copy_buffer = "2kb"
+   ```
 
    You can define multiple `[[client]]` blocks in the same `config.toml` to connect one BackhaulPlus process to multiple different servers simultaneously.
 

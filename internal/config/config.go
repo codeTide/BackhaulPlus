@@ -40,6 +40,16 @@ type ServerConfig struct {
 	Heartbeat        int           `toml:"heartbeat"`
 	MuxCon           int           `toml:"mux_con"`
 	AcceptUDP        bool          `toml:"accept_udp"`
+
+	// TCPCopyBuffer controls the userspace buffer used by TCPConnectionHandler.
+	// It is the raw string read from TOML, for example "2kb", "4kb", "16kb", or
+	// "4096". This is the in-process read/write copy buffer used while relaying
+	// data between tunnel/stream and local TCP connections; it is NOT a kernel
+	// TCP socket buffer and is unrelated to tunnel_tcp_buffer. Default: "16kb".
+	TCPCopyBuffer string `toml:"tcp_copy_buffer"`
+	// TCPCopyBufferBytes is the parsed runtime value of TCPCopyBuffer in bytes.
+	// It is not read from TOML.
+	TCPCopyBufferBytes int `toml:"-"`
 }
 
 // SNIGatewayConfig describes a standalone, transport-agnostic SNI gateway. A
@@ -159,6 +169,16 @@ type ClientConfig struct {
 	// OS/kernel autotuning; a positive value is applied equally as the read
 	// and write socket buffers. It is not read from TOML.
 	TunnelTCPBufferBytes int `toml:"-"`
+
+	// TCPCopyBuffer controls the userspace buffer used by TCPConnectionHandler.
+	// It is the raw string read from TOML, for example "2kb", "4kb", "16kb", or
+	// "4096". This is the in-process read/write copy buffer used while relaying
+	// data between tunnel/stream and local TCP connections; it is NOT a kernel
+	// TCP socket buffer and is unrelated to tunnel_tcp_buffer. Default: "16kb".
+	TCPCopyBuffer string `toml:"tcp_copy_buffer"`
+	// TCPCopyBufferBytes is the parsed runtime value of TCPCopyBuffer in bytes.
+	// It is not read from TOML.
+	TCPCopyBufferBytes int `toml:"-"`
 }
 
 // Config represents the complete configuration, including server, client and
