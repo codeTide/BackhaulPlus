@@ -39,8 +39,11 @@ func (c *Client) Start() {
 	// for pprof
 	if c.config.PPROF {
 		go func() {
-			c.logger.Info("pprof started at port 6061")
-			http.ListenAndServe("0.0.0.0:6061", nil)
+			addr := "0.0.0.0:6061"
+			c.logger.Infof("pprof: listening on %s", addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				c.logger.Warnf("pprof: failed to listen on %s: %v", addr, err)
+			}
 		}()
 	}
 
