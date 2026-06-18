@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codeTide/BackhaulPlus/internal/config"
 	"github.com/codeTide/BackhaulPlus/internal/utils"
 	"github.com/codeTide/BackhaulPlus/internal/web"
 	"github.com/quic-go/quic-go"
@@ -39,7 +40,7 @@ type QuicConfig struct {
 	Nodelay          bool
 	Sniffer          bool
 	KeepAlive        time.Duration
-	RetryInterval    time.Duration
+	RetryInterval    config.RetryIntervalConfig
 	DialTimeOut      time.Duration
 	MuxVersion       int
 	MaxFrameSize     int
@@ -48,6 +49,9 @@ type QuicConfig struct {
 	ConnectionPool   int
 	WebPort          int
 	AggressivePool   bool
+	// DialLimiter optionally throttles remote dial attempts. It is shared with
+	// the other dial goroutines of the same client and may be nil (disabled).
+	DialLimiter *utils.DialRateLimiter
 }
 
 func NewQuicClient(parentCtx context.Context, config *QuicConfig, logger *logrus.Logger) *QuicTransport {
@@ -114,15 +118,25 @@ func (c *QuicTransport) ChannelDialer(coldStart bool) {
 	c.config.TunnelStatus = "Disconnected (Quic)"
 	c.logger.Info("attempting to establish quic control channel")
 
+	retry := config.NewRetryState(c.config.RetryInterval)
+
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
+			// Throttle remote dial attempts when a per-client rate limit is set.
+			if err := c.config.DialLimiter.Wait(c.ctx); err != nil {
+				return
+			}
+
 			qConn, err := c.quicDialer(c.config.RemoteAddr)
 			if err != nil {
-				c.logger.Errorf("quic channel dialer: error dialing remote address %s: %v", c.config.RemoteAddr, err)
-				time.Sleep(c.config.RetryInterval)
+				delay := retry.NextDelay()
+				c.logger.Errorf("remote dial failed: error dialing remote address %s: %v; retrying in %s", c.config.RemoteAddr, err, delay)
+				if !sleepWithContext(c.ctx, delay) {
+					return
+				}
 				continue
 			}
 
@@ -131,6 +145,9 @@ func (c *QuicTransport) ChannelDialer(coldStart bool) {
 			if err != nil {
 				c.logger.Error("failed to open stream for channel handshake: ", err)
 				qConn.CloseWithError(1, "failed to open stream")
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 			err = utils.SendBinaryString(stream, c.config.Token)
@@ -138,6 +155,9 @@ func (c *QuicTransport) ChannelDialer(coldStart bool) {
 				c.logger.Errorf("failed to send security token: %v", err)
 				stream.Close()
 				qConn.CloseWithError(1, "failed to send security token")
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 
@@ -146,6 +166,9 @@ func (c *QuicTransport) ChannelDialer(coldStart bool) {
 				c.logger.Errorf("failed to set read deadline: %v", err)
 				stream.Close()
 				qConn.CloseWithError(1, "failed to set read deadline")
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 			// Receive response
@@ -158,13 +181,17 @@ func (c *QuicTransport) ChannelDialer(coldStart bool) {
 				}
 				stream.Close()
 				qConn.CloseWithError(1, "close on timeout/response deadline")
-				time.Sleep(c.config.RetryInterval)
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 			// Resetting the deadline (removes any existing deadline)
 			stream.SetReadDeadline(time.Time{})
 
 			if message == c.config.Token {
+				// Control channel is fully established: reset the backoff.
+				retry.Reset()
 				c.controlChannel = qConn
 				c.logger.Info("quic control channel established successfully")
 
@@ -184,6 +211,9 @@ func (c *QuicTransport) ChannelDialer(coldStart bool) {
 				c.logger.Errorf("invalid token received. Expected: %s, Received: %s. Retrying...", c.config.Token, message)
 				stream.Close()
 				qConn.CloseWithError(1, "invalid token error")
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 		}
@@ -291,6 +321,14 @@ func (c *QuicTransport) tunnelDialer() {
 		return
 	}
 	c.logger.Debugf("initiating new wsmux tunnel connection to address %s", c.config.RemoteAddr)
+
+	// Throttle remote dial attempts when a per-client rate limit is set.
+	if err := c.config.DialLimiter.Wait(c.ctx); err != nil {
+		c.activeMu.Lock()
+		c.activeConnections--
+		c.activeMu.Unlock()
+		return
+	}
 
 	tunnelConn, err := c.quicDialer(c.config.RemoteAddr)
 	if err != nil {

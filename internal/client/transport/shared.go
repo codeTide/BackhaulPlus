@@ -17,6 +17,29 @@ import (
 	"golang.org/x/exp/rand"
 )
 
+// sleepWithContext waits for delay or until ctx is cancelled, whichever comes
+// first. It returns true if the full delay elapsed and false if ctx was
+// cancelled, so retry loops can stop promptly on shutdown/restart instead of
+// blocking until the (possibly long) backoff finishes.
+func sleepWithContext(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+			return true
+		}
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 func ResolveRemoteAddr(remoteAddr string) (int, string, error) {
 	// Split the address into host and port
 	parts := strings.Split(remoteAddr, ":")
@@ -63,8 +86,11 @@ func TcpDialer(ctx context.Context, address string, timeout time.Duration, keepA
 			break
 		}
 
-		// Log retry attempt and wait before retrying
-		time.Sleep(backoff)
+		// Wait before retrying, but stop promptly if the context is cancelled
+		// (e.g. on stop/restart) instead of blocking for the full backoff.
+		if !sleepWithContext(ctx, backoff) {
+			return nil, ctx.Err()
+		}
 		backoff *= 2 // Exponential backoff (double the wait time after each failure)
 	}
 
@@ -183,8 +209,11 @@ func WebSocketDialer(ctx context.Context, addr string, edgeIP string, path strin
 			break
 		}
 
-		// Log the retry attempt and wait before retrying
-		time.Sleep(backoff)
+		// Wait before retrying, but stop promptly if the context is cancelled
+		// (e.g. on stop/restart) instead of blocking for the full backoff.
+		if !sleepWithContext(ctx, backoff) {
+			return nil, ctx.Err()
+		}
 		backoff *= 2 // Exponential backoff (double the wait time after each failure)
 	}
 

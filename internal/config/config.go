@@ -151,27 +151,27 @@ type HTTPGatewayRoute struct {
 
 // ClientConfig represents the configuration for the client.
 type ClientConfig struct {
-	Name             string        `toml:"name"`
-	RemoteAddr       string        `toml:"remote_addr"`
-	Transport        TransportType `toml:"transport"`
-	Token            string        `toml:"token"`
-	ConnectionPool   int           `toml:"connection_pool"`
-	RetryInterval    int           `toml:"retry_interval"`
-	Nodelay          bool          `toml:"nodelay"`
-	Keepalive        int           `toml:"keepalive_period"`
-	LogLevel         string        `toml:"log_level"`
-	PPROF            bool          `toml:"pprof"`
-	MuxSession       int           `toml:"mux_session"`
-	MuxVersion       int           `toml:"mux_version"`
-	MaxFrameSize     int           `toml:"mux_framesize"`
-	MaxReceiveBuffer int           `toml:"mux_recievebuffer"`
-	MaxStreamBuffer  int           `toml:"mux_streambuffer"`
-	Sniffer          bool          `toml:"sniffer"`
-	WebPort          int           `toml:"web_port"`
-	SnifferLog       string        `toml:"sniffer_log"`
-	DialTimeout      int           `toml:"dial_timeout"`
-	AggressivePool   bool          `toml:"aggressive_pool"`
-	EdgeIP           string        `toml:"edge_ip"`
+	Name             string              `toml:"name"`
+	RemoteAddr       string              `toml:"remote_addr"`
+	Transport        TransportType       `toml:"transport"`
+	Token            string              `toml:"token"`
+	ConnectionPool   int                 `toml:"connection_pool"`
+	RetryInterval    RetryIntervalConfig `toml:"retry_interval"`
+	Nodelay          bool                `toml:"nodelay"`
+	Keepalive        int                 `toml:"keepalive_period"`
+	LogLevel         string              `toml:"log_level"`
+	PPROF            bool                `toml:"pprof"`
+	MuxSession       int                 `toml:"mux_session"`
+	MuxVersion       int                 `toml:"mux_version"`
+	MaxFrameSize     int                 `toml:"mux_framesize"`
+	MaxReceiveBuffer int                 `toml:"mux_recievebuffer"`
+	MaxStreamBuffer  int                 `toml:"mux_streambuffer"`
+	Sniffer          bool                `toml:"sniffer"`
+	WebPort          int                 `toml:"web_port"`
+	SnifferLog       string              `toml:"sniffer_log"`
+	DialTimeout      int                 `toml:"dial_timeout"`
+	AggressivePool   bool                `toml:"aggressive_pool"`
+	EdgeIP           string              `toml:"edge_ip"`
 
 	// TunnelTCPBuffer controls the TCP socket receive/send buffer used for
 	// tcpmux tunnel connections. It is the raw string read from TOML
@@ -192,6 +192,15 @@ type ClientConfig struct {
 	// TCPCopyBufferBytes is the parsed runtime value of TCPCopyBuffer in bytes.
 	// It is not read from TOML.
 	TCPCopyBufferBytes int `toml:"-"`
+
+	// DialRateLimit optionally caps the number of new remote Dial/connect
+	// attempts this client makes to remote_addr per second (e.g. "2/s"). Empty,
+	// "0" and "0/s" disable it. It only throttles remote dials, never local
+	// Xray/localhost dials. It is the raw string read from TOML.
+	DialRateLimit string `toml:"dial_rate_limit"`
+	// DialRateLimitConfig is the parsed, runtime-only form of DialRateLimit.
+	// It is not read from TOML.
+	DialRateLimitConfig DialRateLimitConfig `toml:"-"`
 }
 
 // Config represents the complete configuration, including server, client and

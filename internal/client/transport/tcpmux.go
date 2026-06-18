@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codeTide/BackhaulPlus/internal/config"
 	"github.com/codeTide/BackhaulPlus/internal/utils"
 	"github.com/codeTide/BackhaulPlus/internal/web"
 
@@ -38,7 +39,7 @@ type TcpMuxConfig struct {
 	Nodelay          bool
 	Sniffer          bool
 	KeepAlive        time.Duration
-	RetryInterval    time.Duration
+	RetryInterval    config.RetryIntervalConfig
 	DialTimeOut      time.Duration
 	MuxVersion       int
 	MaxFrameSize     int
@@ -54,6 +55,9 @@ type TcpMuxConfig struct {
 	// TCPCopyBuffer controls the userspace copy buffer used by TCPConnectionHandler.
 	// Default: 16KB.
 	TCPCopyBuffer int
+	// DialLimiter optionally throttles remote dial attempts. It is shared with
+	// the other dial goroutines of the same client and may be nil (disabled).
+	DialLimiter *utils.DialRateLimiter
 }
 
 func NewMuxClient(parentCtx context.Context, config *TcpMuxConfig, logger *logrus.Logger) *TcpMuxTransport {
@@ -141,15 +145,27 @@ func (c *TcpMuxTransport) Restart() {
 func (c *TcpMuxTransport) channelDialer() {
 	c.logger.Info("attempting to establish tcpmux control channel")
 
+	retry := config.NewRetryState(c.config.RetryInterval)
+
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
-			tunnelConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, true, 3, 0, 0)
+			// Throttle remote dial attempts when a per-client rate limit is set.
+			if err := c.config.DialLimiter.Wait(c.ctx); err != nil {
+				return
+			}
+
+			// Internal retry is 1: the outer RetryState owns retry/backoff and the
+			// dial limiter must see every real remote connect attempt.
+			tunnelConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, true, 1, 0, 0)
 			if err != nil {
-				c.logger.Errorf("channel dialer: %v", err)
-				time.Sleep(c.config.RetryInterval)
+				delay := retry.NextDelay()
+				c.logger.Errorf("remote dial failed: %v; retrying in %s", err, delay)
+				if !sleepWithContext(c.ctx, delay) {
+					return
+				}
 				continue
 			}
 
@@ -158,6 +174,9 @@ func (c *TcpMuxTransport) channelDialer() {
 			if err != nil {
 				c.logger.Errorf("failed to send security token: %v", err)
 				tunnelConn.Close()
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 
@@ -165,6 +184,9 @@ func (c *TcpMuxTransport) channelDialer() {
 			if err := tunnelConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 				c.logger.Errorf("failed to set read deadline: %v", err)
 				tunnelConn.Close()
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 			// Receive response
@@ -176,13 +198,17 @@ func (c *TcpMuxTransport) channelDialer() {
 					c.logger.Errorf("failed to receive control channel response: %v", err)
 				}
 				tunnelConn.Close() // Close connection on error or timeout
-				time.Sleep(c.config.RetryInterval)
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 			// Resetting the deadline (removes any existing deadline)
 			tunnelConn.SetReadDeadline(time.Time{})
 
 			if message == c.config.Token {
+				// Control channel is fully established: reset the backoff.
+				retry.Reset()
 				c.controlChannel = tunnelConn
 				c.logger.Info("control channel established successfully")
 
@@ -195,7 +221,9 @@ func (c *TcpMuxTransport) channelDialer() {
 			} else {
 				c.logger.Errorf("invalid token received. Expected: %s, Received: %s. Retrying...", c.config.Token, message)
 				tunnelConn.Close() // Close connection if the token is invalid
-				time.Sleep(c.config.RetryInterval)
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 		}
@@ -338,13 +366,21 @@ func (c *TcpMuxTransport) tunnelDialer() {
 	// Positive values are applied equally as read and write socket buffers
 	// (the historical default of 2MB is good for ~200mbit per connection).
 	tcpBuffer := c.config.TunnelTCPBuffer
+
+	// Throttle remote dial attempts when a per-client rate limit is set.
+	if err := c.config.DialLimiter.Wait(c.ctx); err != nil {
+		return
+	}
+
+	// Internal retry is 1 so each dial limiter slot maps to a single real
+	// remote connect attempt.
 	tunnelConn, err := TcpDialer(
 		c.ctx,
 		c.config.RemoteAddr,
 		c.config.DialTimeOut,
 		c.config.KeepAlive,
 		c.config.Nodelay,
-		3,
+		1,
 		tcpBuffer,
 		tcpBuffer,
 	)
