@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codeTide/BackhaulPlus/internal/config"
 	"github.com/codeTide/BackhaulPlus/internal/utils"
 	"github.com/codeTide/BackhaulPlus/internal/web"
 
@@ -33,7 +34,7 @@ type TcpConfig struct {
 	SnifferLog     string
 	TunnelStatus   string
 	KeepAlive      time.Duration
-	RetryInterval  time.Duration
+	RetryInterval  config.RetryIntervalConfig
 	DialTimeOut    time.Duration
 	ConnPoolSize   int
 	WebPort        int
@@ -43,6 +44,9 @@ type TcpConfig struct {
 	// TCPCopyBuffer controls the userspace copy buffer used by TCPConnectionHandler.
 	// Default: 16KB.
 	TCPCopyBuffer int
+	// DialLimiter optionally throttles remote dial attempts. It is shared with
+	// the other dial goroutines of the same client and may be nil (disabled).
+	DialLimiter *utils.DialRateLimiter
 }
 
 func NewTCPClient(parentCtx context.Context, config *TcpConfig, logger *logrus.Logger) *TcpTransport {
@@ -120,16 +124,26 @@ func (c *TcpTransport) Restart() {
 func (c *TcpTransport) channelDialer() {
 	c.logger.Info("attempting to establish control channel")
 
+	retry := config.NewRetryState(c.config.RetryInterval)
+
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
+			// Throttle remote dial attempts when a per-client rate limit is set.
+			if err := c.config.DialLimiter.Wait(c.ctx); err != nil {
+				return
+			}
+
 			//set default behaviour of control channel to nodelay, also using default buffer parameters
 			tunnelTCPConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, true, 3, 0, 0)
 			if err != nil {
-				c.logger.Errorf("channel dialer: %v", err)
-				time.Sleep(c.config.RetryInterval)
+				delay := retry.NextDelay()
+				c.logger.Errorf("remote dial failed: %v; retrying in %s", err, delay)
+				if !sleepWithContext(c.ctx, delay) {
+					return
+				}
 				continue
 			}
 
@@ -138,6 +152,9 @@ func (c *TcpTransport) channelDialer() {
 			if err != nil {
 				c.logger.Errorf("failed to send security token: %v", err)
 				tunnelTCPConn.Close()
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 
@@ -145,6 +162,9 @@ func (c *TcpTransport) channelDialer() {
 			if err := tunnelTCPConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 				c.logger.Errorf("failed to set read deadline: %v", err)
 				tunnelTCPConn.Close()
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 
@@ -157,13 +177,17 @@ func (c *TcpTransport) channelDialer() {
 					c.logger.Errorf("failed to receive control channel response: %v", err)
 				}
 				tunnelTCPConn.Close() // Close connection on error or timeout
-				time.Sleep(c.config.RetryInterval)
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 			// Resetting the deadline (removes any existing deadline)
 			tunnelTCPConn.SetReadDeadline(time.Time{})
 
 			if message == c.config.Token {
+				// Control channel is fully established: reset the backoff.
+				retry.Reset()
 				c.controlChannel = tunnelTCPConn
 				c.logger.Info("control channel established successfully")
 
@@ -176,7 +200,9 @@ func (c *TcpTransport) channelDialer() {
 			} else {
 				c.logger.Errorf("invalid token received. Expected: %s, Received: %s. Retrying...", c.config.Token, message)
 				tunnelTCPConn.Close() // Close connection if the token is invalid
-				time.Sleep(c.config.RetryInterval)
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 		}
@@ -319,6 +345,11 @@ func (c *TcpTransport) channelHandler() {
 // Dialing to the tunnel server, chained functions, without retry
 func (c *TcpTransport) tunnelDialer() {
 	c.logger.Debugf("initiating new connection to tunnel server at %s", c.config.RemoteAddr)
+
+	// Throttle remote dial attempts when a per-client rate limit is set.
+	if err := c.config.DialLimiter.Wait(c.ctx); err != nil {
+		return
+	}
 
 	// Dial to the tunnel server
 	// Based on calculations 1MB of buffer on 80ms RTT will have about 100Mbit Bandwidth per connection,

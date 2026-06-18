@@ -17,6 +17,29 @@ import (
 	"golang.org/x/exp/rand"
 )
 
+// sleepWithContext waits for delay or until ctx is cancelled, whichever comes
+// first. It returns true if the full delay elapsed and false if ctx was
+// cancelled, so retry loops can stop promptly on shutdown/restart instead of
+// blocking until the (possibly long) backoff finishes.
+func sleepWithContext(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+			return true
+		}
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
 func ResolveRemoteAddr(remoteAddr string) (int, string, error) {
 	// Split the address into host and port
 	parts := strings.Split(remoteAddr, ":")

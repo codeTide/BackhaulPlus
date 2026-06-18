@@ -160,7 +160,8 @@ To start using the solution, you'll need to configure both server and client com
    aggressive_pool = false       # Enables aggressive connection pool management.(optional, default: false).
    keepalive_period = 75         # Interval in seconds to send keep-alive packets. (optional, default: 75s)
    nodelay = false               # Use TCP_NODELAY (optional, default: false).
-   retry_interval = 3            # Retry interval in seconds (optional, default: 3s).
+   retry_interval = 3            # Retry interval between control-channel reconnect attempts. Accepts a bare number of seconds (e.g. 3), a fixed duration ("5s", "500ms"), or an adaptive backoff range ("5s-60s"). (optional, default: 3s).
+   dial_rate_limit = "2/s"       # Cap on new remote Dial/connect attempts per second for this client. Empty/"0"/"0/s" disable it. Only throttles remote dials, never local Xray/localhost dials. (optional, default: disabled).
    dial_timeout = 10             # Sets the max wait time for establishing a network connection. (optional, default: 10s)
    mux_version = 1               # SMUX protocol version (1 or 2). Version 2 may have extra features. (optional)
    mux_framesize = 32768         # 32 KB. The maximum size of a frame that can be sent over a connection. (optional)
@@ -214,6 +215,63 @@ To start using the solution, you'll need to configure both server and client com
 
    ```toml
    tcp_copy_buffer = "2kb"
+   ```
+
+   ### Adaptive retry and remote dial rate limiting (client)
+
+   These two client options help when the destination server (e.g. an Iran
+   endpoint reached from an OVH VPS) becomes unreachable, dropped or
+   blackholed for a while, and you want to avoid a reconnect/SYN storm:
+
+   * `retry_interval` controls how long the client waits between failed
+     attempts to (re)establish its remote control channel. It is
+     backward-compatible and accepts three forms:
+     * a bare number — `retry_interval = 5` means a **fixed 5 seconds**
+       (legacy behavior, still valid);
+     * a fixed duration string — `retry_interval = "5s"`, `"500ms"`,
+       `"1m"`, `"2m30s"` (standard Go `time.ParseDuration` units);
+     * an adaptive backoff range — `retry_interval = "5s-60s"` starts at
+       `5s` and doubles after each consecutive failure (`5s, 10s, 20s, 40s,
+       60s, 60s, …`) up to the maximum, then resets to the minimum once a
+       connection succeeds. For a range, the start must be greater than `0`
+       and strictly smaller than the maximum.
+
+   * `dial_rate_limit` caps how many **new remote Dial/connect attempts**
+     this client makes towards `remote_addr` per second, e.g.
+     `dial_rate_limit = "2/s"`. An empty value, `"0"` or `"0/s"` (or omitting
+     the option) disables it and keeps the old behavior. The limiter is
+     **shared across all dial goroutines of the same client** (control
+     channel, connection pool and load dials), so the per-second cap is
+     enforced globally for that client.
+
+     `dial_rate_limit` limits BackhaulPlus remote Dial attempts. It does not
+     directly limit kernel TCP SYN packets, but it reduces SYN bursts by
+     limiting new connect attempts. It is **only** applied to remote dials to
+     `remote_addr`; it is never applied to local Xray/`localhost` dials. It is
+     applied to the remote dials of all client transports (`tcp`, `tcpmux`,
+     `ws`/`wss`, `wsmux`/`wssmux`, `quic`, `udp`).
+
+   Example tuned for a provider sensitive to outbound SYN bursts:
+
+   ```toml
+   [[client]]
+   name = "IR1"
+   remote_addr = "87.107.83.36:20017"
+   transport = "tcpmux"
+   token = "CHANGE_ME"
+
+   connection_pool = 8
+   aggressive_pool = false
+   dial_timeout = 10
+
+   # Backward-compatible fixed retry:
+   # retry_interval = 5
+
+   # Adaptive retry: start at 5s and back off up to 60s after repeated failures.
+   retry_interval = "5s-60s"
+
+   # Limit outbound remote Dial attempts from this client.
+   dial_rate_limit = "2/s"
    ```
 
    You can define multiple `[[client]]` blocks in the same `config.toml` to connect one BackhaulPlus process to multiple different servers simultaneously.

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codeTide/BackhaulPlus/internal/config"
 	"github.com/codeTide/BackhaulPlus/internal/utils"
 	"github.com/codeTide/BackhaulPlus/internal/web"
 	"github.com/sirupsen/logrus"
@@ -31,12 +32,15 @@ type UdpConfig struct {
 	Token          string
 	SnifferLog     string
 	TunnelStatus   string
-	RetryInterval  time.Duration
+	RetryInterval  config.RetryIntervalConfig
 	DialTimeOut    time.Duration
 	ConnPoolSize   int
 	WebPort        int
 	Sniffer        bool
 	AggressivePool bool
+	// DialLimiter optionally throttles remote dial attempts. It is shared with
+	// the other dial goroutines of the same client and may be nil (disabled).
+	DialLimiter *utils.DialRateLimiter
 }
 
 func NewUDPClient(parentCtx context.Context, config *UdpConfig, logger *logrus.Logger) *UdpTransport {
@@ -116,15 +120,25 @@ func (c *UdpTransport) Restart() {
 func (c *UdpTransport) channelDialer() {
 	c.logger.Info("attempting to establish control channel")
 
+	retry := config.NewRetryState(c.config.RetryInterval)
+
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
+			// Throttle remote dial attempts when a per-client rate limit is set.
+			if err := c.config.DialLimiter.Wait(c.ctx); err != nil {
+				return
+			}
+
 			tunnelTCPConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, 30, true, 3, 0, 0)
 			if err != nil {
-				c.logger.Errorf("channel dialer: %v", err)
-				time.Sleep(c.config.RetryInterval)
+				delay := retry.NextDelay()
+				c.logger.Errorf("remote dial failed: %v; retrying in %s", err, delay)
+				if !sleepWithContext(c.ctx, delay) {
+					return
+				}
 				continue
 			}
 
@@ -133,6 +147,9 @@ func (c *UdpTransport) channelDialer() {
 			if err != nil {
 				c.logger.Errorf("failed to send security token: %v", err)
 				tunnelTCPConn.Close()
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 
@@ -140,6 +157,9 @@ func (c *UdpTransport) channelDialer() {
 			if err := tunnelTCPConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 				c.logger.Errorf("failed to set read deadline: %v", err)
 				tunnelTCPConn.Close()
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 
@@ -152,13 +172,17 @@ func (c *UdpTransport) channelDialer() {
 					c.logger.Errorf("failed to receive control channel response: %v", err)
 				}
 				tunnelTCPConn.Close() // Close connection on error or timeout
-				time.Sleep(c.config.RetryInterval)
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 			// Resetting the deadline (removes any existing deadline)
 			tunnelTCPConn.SetReadDeadline(time.Time{})
 
 			if message == c.config.Token {
+				// Control channel is fully established: reset the backoff.
+				retry.Reset()
 				c.controlChannel = tunnelTCPConn
 				c.logger.Info("control channel established successfully")
 
@@ -172,7 +196,9 @@ func (c *UdpTransport) channelDialer() {
 			} else {
 				c.logger.Errorf("invalid token received. Expected: %s, Received: %s. Retrying...", c.config.Token, message)
 				tunnelTCPConn.Close() // Close connection if the token is invalid
-				time.Sleep(c.config.RetryInterval)
+				if !sleepWithContext(c.ctx, retry.NextDelay()) {
+					return
+				}
 				continue
 			}
 		}
@@ -318,6 +344,11 @@ func (c *UdpTransport) tunnelDialer() {
 	remoteAddr, err := net.ResolveUDPAddr("udp", c.config.RemoteAddr)
 	if err != nil {
 		c.logger.Error("failed to resolve tunnel address:", err)
+		return
+	}
+
+	// Throttle remote dial attempts when a per-client rate limit is set.
+	if err := c.config.DialLimiter.Wait(c.ctx); err != nil {
 		return
 	}
 
