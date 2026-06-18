@@ -176,8 +176,11 @@ func (s *Server) Start() {
 	// for pprof and debugging
 	if s.config.PPROF {
 		go func() {
-			s.logger.Info("pprof started at port 6060")
-			http.ListenAndServe("0.0.0.0:6060", nil)
+			addr := "0.0.0.0:6060"
+			s.logger.Infof("pprof: listening on %s", addr)
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				s.logger.Warnf("pprof: failed to listen on %s: %v", addr, err)
+			}
 		}()
 	}
 

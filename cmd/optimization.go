@@ -1,42 +1,46 @@
 package cmd
 
 import (
+	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"syscall"
 )
+
+type sysctlSetting struct {
+	key   string
+	value string
+}
+
+func (s sysctlSetting) argument() string {
+	return s.key + "=" + s.value
+}
+
+var tcpTuningSettings = []sysctlSetting{
+	{key: "net.ipv4.ip_local_port_range", value: "1024 65535"}, // Increase ephemeral ports
+	{key: "net.ipv4.tcp_tw_reuse", value: "1"},                 // Reuse TIME_WAIT sockets
+	{key: "net.ipv4.tcp_fin_timeout", value: "15"},             // Reduce TCP FIN timeout
+	{key: "net.core.somaxconn", value: "4096"},                 // Increase max queue length of incoming connections
+	{key: "net.ipv4.tcp_max_syn_backlog", value: "8192"},       // Increase SYN request backlog
+	{key: "net.ipv4.tcp_window_scaling", value: "1"},           // Enable TCP window scaling
+	{key: "net.ipv4.tcp_fastopen", value: "3"},                 // Enable TCP Fast Open
+	{key: "net.ipv4.tcp_rmem", value: "16384 262144 1048576"},  // Maximum of 1MB of TCP read buffer memory
+	{key: "net.ipv4.tcp_wmem", value: "16384 262144 1048576"},  // Maximum of 1MB TCP write buffer memory
+	{key: "net.ipv4.tcp_notsent_lowat", value: "4096"},         // Limit unsent TCP data buffered in the kernel
+	{key: "net.core.rmem_default", value: "262144"},            // Set default receive memory
+	{key: "net.core.wmem_default", value: "262144"},
+	{key: "net.core.wmem_max", value: "67108864"}, // 64MB: Maximum send buffer size allowed for user sockets
+	{key: "net.core.rmem_max", value: "67108864"}, // 64MB: Maximum receive buffer size allowed for user sockets
+}
 
 // applyTCPTuning applies temporary TCP optimizations for Linux to handle massive connections
 func ApplyTCPTuning() {
 	if runtime.GOOS == "linux" {
-		logger.Info("Applying TCP optimizations for Linux...")
+		logger.Info("tcp tuning: applying Linux optimizations")
 
-		// Commands for optimizing TCP parameters
-		commands := [][]string{
-			{"sysctl", "-w", "net.ipv4.ip_local_port_range=1024 65535"}, // Increase ephemeral ports
-			{"sysctl", "-w", "net.ipv4.tcp_tw_reuse=1"},                 // Reuse TIME_WAIT sockets
-			{"sysctl", "-w", "net.ipv4.tcp_fin_timeout=15"},             // Reduce TCP FIN timeout
-			{"sysctl", "-w", "net.core.somaxconn=4096"},                 // Increase max queue length of incoming connections
-			{"sysctl", "-w", "net.ipv4.tcp_max_syn_backlog=8192"},       // Increase SYN request backlog
-			{"sysctl", "-w", "net.ipv4.tcp_window_scaling=1"},           // Enable TCP window scaling
-			{"sysctl", "-w", "net.ipv4.tcp_fastopen=3"},                 // Enable TCP Fast Open
-			{"sysctl", "-w", "net.ipv4.tcp_rmem=16384 262144 1048576"},  // Maximum of 1MB of TCP read buffer memory
-			{"sysctl", "-w", "net.ipv4.tcp_wmem=16384 262144 1048576"},  // Maximum of 1MB TCP write buffer memory
-			{"sysctl", "-w", "net.ipv4.tcp_notsent_lowat=4096"},         // WE DO NOT LET more than 4096 bytes of data goes to buffer if the unsended data still is in the buffer
-			{"sysctl", "-w", "net.core.rmem_default=262144"},            // Set Default Receive Memory in order to receive data with better pace and not start with minimum of 16k
-			{"sysctl", "-w", "net.core.wmem_default=262144"},
-			{"sysctl", "-w", "net.core.wmem_max = 67108864"}, // 64MB: Maxmimum Send Buffer Size Allowed For User To Set In Custom Socket
-			{"sysctl", "-w", "net.core.rmem_max = 67108864"}, // 64MB: Maxmimum Receive Buffer Size Allowed For User To Set In Custom Socket
-		}
-
-		// Execute the sysctl commands
-		for _, cmd := range commands {
-			err := exec.Command(cmd[0], cmd[1:]...).Run()
-			if err != nil {
-				logger.Errorf("Failed to apply TCP tuning: %s", cmd)
-			} else {
-				logger.Debugf("Successfully applied: %s", cmd)
-			}
+		for _, setting := range tcpTuningSettings {
+			applySysctlSetting(setting)
 		}
 
 		// Set file descriptor limit programmatically
@@ -58,6 +62,26 @@ func ApplyTCPTuning() {
 			}
 		}
 	} else {
-		logger.Info("Non-Linux system detected, skipping TCP optimizations.")
+		logger.Info("tcp tuning: non-Linux system detected, skipping optimizations")
 	}
+}
+
+func applySysctlSetting(setting sysctlSetting) {
+	arg := setting.argument()
+	if os.Geteuid() != 0 {
+		logger.Warnf("tcp tuning: skipped %s; root privileges required", arg)
+		return
+	}
+
+	output, err := exec.Command("sysctl", "-w", arg).CombinedOutput()
+	trimmedOutput := strings.TrimSpace(string(output))
+	if err != nil {
+		if trimmedOutput != "" {
+			logger.Warnf("tcp tuning: failed to set %s: %v: %s", arg, err, trimmedOutput)
+			return
+		}
+		logger.Warnf("tcp tuning: failed to set %s: %v", arg, err)
+		return
+	}
+	logger.Debugf("tcp tuning: applied %s", arg)
 }
