@@ -28,7 +28,7 @@ func NewServer(cfg *config.ServerConfig, parentCtx context.Context) *Server {
 		config: cfg,
 		ctx:    ctx,
 		cancel: cancel,
-		logger: utils.NewLogger(cfg.LogLevel, cfg.Name),
+		logger: utils.NewLogger(cfg.LogLevel, utils.ComponentLogPrefix("server", cfg.Name)),
 	}
 	s.build()
 	return s
@@ -177,12 +177,14 @@ func (s *Server) Start() {
 	if s.config.PPROF {
 		go func() {
 			addr := "0.0.0.0:6060"
-			s.logger.Infof("pprof: listening on %s", addr)
+			s.logger.Infof("pprof listening on %s", addr)
 			if err := http.ListenAndServe(addr, nil); err != nil {
-				s.logger.Warnf("pprof: failed to listen on %s: %v", addr, err)
+				s.logger.Warnf("pprof failed to listen on %s: %v", addr, err)
 			}
 		}()
 	}
+
+	s.logger.Infof("started; transport=%s bind=%s", s.config.Transport, s.config.BindAddr)
 
 	go s.start()
 

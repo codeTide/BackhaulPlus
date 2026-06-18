@@ -118,7 +118,7 @@ func (c *TcpTransport) Restart() {
 }
 
 func (c *TcpTransport) channelDialer() {
-	c.logger.Info("attempting to establish a new control channel connection...")
+	c.logger.Info("attempting to establish control channel")
 
 	for {
 		select {

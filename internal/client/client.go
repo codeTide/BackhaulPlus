@@ -30,7 +30,7 @@ func NewClient(cfg *config.ClientConfig, parentCtx context.Context) *Client {
 		config: cfg,
 		ctx:    ctx,
 		cancel: cancel,
-		logger: utils.NewLogger(cfg.LogLevel, cfg.Name),
+		logger: utils.NewLogger(cfg.LogLevel, utils.ComponentLogPrefix("client", cfg.Name)),
 	}
 }
 
@@ -40,14 +40,14 @@ func (c *Client) Start() {
 	if c.config.PPROF {
 		go func() {
 			addr := "0.0.0.0:6061"
-			c.logger.Infof("pprof: listening on %s", addr)
+			c.logger.Infof("pprof listening on %s", addr)
 			if err := http.ListenAndServe(addr, nil); err != nil {
-				c.logger.Warnf("pprof: failed to listen on %s: %v", addr, err)
+				c.logger.Warnf("pprof failed to listen on %s: %v", addr, err)
 			}
 		}()
 	}
 
-	c.logger.Infof("client with remote address %s started successfully", c.config.RemoteAddr)
+	c.logger.Infof("started; transport=%s remote=%s", c.config.Transport, c.config.RemoteAddr)
 
 	if c.config.Transport == config.TCP {
 		tcpConfig := &transport.TcpConfig{

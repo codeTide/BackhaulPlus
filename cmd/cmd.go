@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/codeTide/BackhaulPlus/internal/client"
@@ -40,15 +41,12 @@ func Run(configPath string, ctx context.Context) {
 	// Determine whether to run as a server or client
 	switch {
 	case len(cfg.Servers) > 0:
-		logger.Infof("config: loaded %d server entry/entries", len(cfg.Servers))
-
 		// A shared registry maps each server name to its inbound runtime so SNI
 		// gateways can dispatch connections into the correct server pipeline.
 		registry := transport.NewRegistry()
 
 		// Run multiple servers and register their runtimes.
 		for i := range cfg.Servers {
-			logger.Infof("config: starting server[%d] name=%s transport=%s bind=%s", i, cfg.Servers[i].Name, cfg.Servers[i].Transport, cfg.Servers[i].BindAddr)
 			srv := server.NewServer(&cfg.Servers[i], ctx)
 			if rt := srv.Runtime(); rt != nil {
 				registry.Register(cfg.Servers[i].Name, rt)
@@ -79,14 +77,12 @@ func Run(configPath string, ctx context.Context) {
 		logger.Println("shutting down servers...")
 
 	case len(cfg.Clients) > 0:
-		logger.Infof("config: loaded %d client entry/entries", len(cfg.Clients))
 		clients := make([]*client.Client, 0, len(cfg.Clients))
 		for i := range cfg.Clients {
 			if cfg.Clients[i].RemoteAddr == "" {
-				logger.Warnf("config: skipping client[%d] name=%s; remote_addr is empty", i, cfg.Clients[i].Name)
+				logger.Warnf("%s: skipped; remote address is empty", clientLogLabel(i, cfg.Clients[i].Name))
 				continue
 			}
-			logger.Infof("config: starting client[%d] name=%s transport=%s remote=%s", i, cfg.Clients[i].Name, cfg.Clients[i].Transport, cfg.Clients[i].RemoteAddr)
 			clnt := client.NewClient(&cfg.Clients[i], ctx)
 			clients = append(clients, clnt)
 			go clnt.Start()
@@ -105,6 +101,14 @@ func Run(configPath string, ctx context.Context) {
 	default:
 		logger.Fatalf("neither server nor client configuration is properly set.")
 	}
+}
+
+func clientLogLabel(index int, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Sprintf("client[%d]", index)
+	}
+	return "client " + name
 }
 
 // legacyServerSNIFields are the per-server SNI fields that have been removed in

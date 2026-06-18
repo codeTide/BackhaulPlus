@@ -121,7 +121,7 @@ func (c *WsTransport) Restart() {
 }
 
 func (c *WsTransport) channelDialer() {
-	c.logger.Info("attempting to establish a new websocket control channel connection")
+	c.logger.Info("attempting to establish websocket control channel")
 
 	for {
 		select {

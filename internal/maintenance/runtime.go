@@ -33,12 +33,12 @@ func StartRuntimeMaintenance(cfg config.RuntimeConfig, logger *logrus.Logger) {
 	}
 
 	if cfg.MemoryReleaseIntervalDuration > 0 {
-		logger.Infof("runtime: memory_release_interval enabled; interval=%s", cfg.MemoryReleaseIntervalDuration)
+		logger.Infof("runtime: memory release enabled; interval=%s", cfg.MemoryReleaseIntervalDuration)
 		go runMemoryRelease(cfg.MemoryReleaseIntervalDuration, logger)
 	}
 
 	if cfg.AutoRestartIntervalDuration > 0 {
-		logger.Infof("runtime: auto_restart_interval enabled; interval=%s", cfg.AutoRestartIntervalDuration)
+		logger.Infof("runtime: auto restart enabled; interval=%s", cfg.AutoRestartIntervalDuration)
 		go runAutoRestart(cfg.AutoRestartIntervalDuration, logger)
 	}
 }
@@ -51,7 +51,8 @@ func runMemoryRelease(interval time.Duration, logger *logrus.Logger) {
 		before := snapshotMemory()
 		debug.FreeOSMemory()
 		after := snapshotMemory()
-		logger.Infof("runtime: memory release completed; %s", formatMemoryReleaseSummary(before, after))
+		logger.Infof("runtime: memory released; %s", formatMemoryReleaseSummary(before, after))
+		logger.Debugf("runtime: memory details; %s", formatMemoryReleaseDetails(before, after))
 	}
 }
 
@@ -71,25 +72,31 @@ func snapshotMemory() memorySnapshot {
 }
 
 func formatMemoryReleaseSummary(before, after memorySnapshot) string {
-	parts := []string{
-		formatMetricChange("heap_alloc", before.HeapAlloc, after.HeapAlloc),
-		formatMetricChange("heap_idle", before.HeapIdle, after.HeapIdle),
-		formatMetricChange("heap_released", before.HeapReleased, after.HeapReleased),
-		formatMetricChange("heap_sys", before.HeapSys, after.HeapSys),
-		formatMetricChange("sys", before.Sys, after.Sys),
-	}
+	parts := []string{}
 	if before.HasRSS && after.HasRSS {
-		parts = append(parts, formatMetricChange("rss", before.RSS, after.RSS))
+		parts = append(parts, formatMetricChange("RAM", before.RSS, after.RSS))
 	}
+	parts = append(parts,
+		formatMetricChange("active Go memory", before.HeapAlloc, after.HeapAlloc),
+		formatMetricChange("returned to system", before.HeapReleased, after.HeapReleased),
+	)
 	return strings.Join(parts, ", ")
 }
 
+func formatMemoryReleaseDetails(before, after memorySnapshot) string {
+	return strings.Join([]string{
+		formatMetricChange("reusable Go memory", before.HeapIdle, after.HeapIdle),
+		formatMetricChange("reserved Go memory", before.HeapSys, after.HeapSys),
+		formatMetricChange("total Go runtime memory", before.Sys, after.Sys),
+	}, ", ")
+}
+
 func formatMetricChange(name string, before, after uint64) string {
-	return fmt.Sprintf("%s=%s->%s (%s)", name, formatMiB(before), formatMiB(after), formatSignedMiBDelta(before, after))
+	return fmt.Sprintf("%s %d -> %s (%s)", name, before/mib, formatMiB(after), formatSignedMiBDelta(before, after))
 }
 
 func formatMiB(bytes uint64) string {
-	return fmt.Sprintf("%dMiB", bytes/mib)
+	return fmt.Sprintf("%d MiB", bytes/mib)
 }
 
 func formatSignedMiBDelta(before, after uint64) string {
@@ -97,9 +104,9 @@ func formatSignedMiBDelta(before, after uint64) string {
 	afterMiB := int64(after / mib)
 	delta := afterMiB - beforeMiB
 	if delta > 0 {
-		return fmt.Sprintf("+%dMiB", delta)
+		return fmt.Sprintf("+%d MiB", delta)
 	}
-	return fmt.Sprintf("%dMiB", delta)
+	return fmt.Sprintf("%d MiB", delta)
 }
 
 func runAutoRestart(interval time.Duration, logger *logrus.Logger) {
@@ -107,7 +114,7 @@ func runAutoRestart(interval time.Duration, logger *logrus.Logger) {
 	defer timer.Stop()
 
 	<-timer.C
-	logger.Info("runtime: auto_restart_interval reached; re-executing process")
+	logger.Info("runtime: auto restart interval reached; re-executing process")
 	if err := reexecSelf(); err != nil {
 		logger.Errorf("runtime: failed to re-exec process: %v", err)
 		os.Exit(1)

@@ -13,7 +13,12 @@ type PrefixHook struct {
 }
 
 func NewPrefixHook(name string) *PrefixHook {
-	return &PrefixHook{Prefix: "[" + name + "] "}
+	prefix := strings.TrimSpace(name)
+	prefix = strings.TrimSuffix(prefix, ":")
+	if prefix != "" {
+		prefix += ": "
+	}
+	return &PrefixHook{Prefix: prefix}
 }
 
 func (h *PrefixHook) Levels() []logrus.Level {
@@ -21,8 +26,18 @@ func (h *PrefixHook) Levels() []logrus.Level {
 }
 
 func (h *PrefixHook) Fire(entry *logrus.Entry) error {
-	entry.Message = h.Prefix + entry.Message
+	if h.Prefix != "" {
+		entry.Message = h.Prefix + entry.Message
+	}
 	return nil
+}
+
+func ComponentLogPrefix(kind, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return kind
+	}
+	return kind + " " + name
 }
 
 type CustomFormatter struct{}
@@ -68,7 +83,7 @@ func NewLogger(logLevel string, prefix ...string) *logrus.Logger {
 	log.SetLevel(parseLevel)
 	log.SetFormatter(&CustomFormatter{})
 
-	if len(prefix) > 0 && prefix[0] != "" {
+	if len(prefix) > 0 && strings.TrimSpace(prefix[0]) != "" {
 		log.AddHook(NewPrefixHook(prefix[0]))
 	}
 
