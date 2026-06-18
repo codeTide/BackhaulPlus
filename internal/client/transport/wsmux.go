@@ -38,7 +38,7 @@ type WsMuxConfig struct {
 	Nodelay          bool
 	Sniffer          bool
 	KeepAlive        time.Duration
-	RetryInterval    config.RetryIntervalConfig
+	RetryInterval    time.Duration
 	DialTimeOut      time.Duration
 	MuxVersion       int
 	MaxFrameSize     int
@@ -52,9 +52,6 @@ type WsMuxConfig struct {
 	// TCPCopyBuffer controls the userspace copy buffer used by TCPConnectionHandler.
 	// Default: 16KB.
 	TCPCopyBuffer int
-	// DialLimiter optionally throttles remote dial attempts. It is shared with
-	// the other dial goroutines of the same client and may be nil (disabled).
-	DialLimiter *utils.DialRateLimiter
 }
 
 func NewWSMuxClient(parentCtx context.Context, config *WsMuxConfig, logger *logrus.Logger) *WsMuxTransport {
@@ -141,30 +138,18 @@ func (c *WsMuxTransport) Restart() {
 func (c *WsMuxTransport) channelDialer() {
 	c.logger.Infof("attempting to establish %s control channel", c.config.Mode)
 
-	retry := config.NewRetryState(c.config.RetryInterval)
-
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		default:
-			// Throttle remote dial attempts when a per-client rate limit is set.
-			if err := c.config.DialLimiter.Wait(c.ctx); err != nil {
-				return
-			}
 
-			// Internal retry is 1: the outer RetryState owns retry/backoff and the
-			// dial limiter must see every real remote connect attempt.
-			tunnelWSConn, err := WebSocketDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/channel", c.config.DialTimeOut, c.config.KeepAlive, true, c.config.Token, c.config.Mode, 1, 0, 0)
+			tunnelWSConn, err := WebSocketDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/channel", c.config.DialTimeOut, c.config.KeepAlive, true, c.config.Token, c.config.Mode, 3, 0, 0)
 			if err != nil {
-				delay := retry.NextDelay()
-				c.logger.Errorf("remote dial failed: %v; retrying in %s", err, delay)
-				if !sleepWithContext(c.ctx, delay) {
-					return
-				}
+				c.logger.Errorf("control channel dialer: %v", err)
+				time.Sleep(c.config.RetryInterval)
 				continue
 			}
-			retry.Reset()
 			c.controlChannel = tunnelWSConn
 			c.logger.Info("control channel established successfully")
 
@@ -313,14 +298,8 @@ func (c *WsMuxTransport) channelHandler() {
 func (c *WsMuxTransport) tunnelDialer() {
 	c.logger.Debugf("initiating new %s tunnel connection to address %s", c.config.Mode, c.config.RemoteAddr)
 
-	// Throttle remote dial attempts when a per-client rate limit is set.
-	if err := c.config.DialLimiter.Wait(c.ctx); err != nil {
-		return
-	}
-
-	// Dial to the tunnel server. Internal retry is 1 so each dial limiter slot
-	// maps to a single real remote connect attempt.
-	tunnelWSConn, err := WebSocketDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/tunnel", c.config.DialTimeOut, c.config.KeepAlive, c.config.Nodelay, c.config.Token, c.config.Mode, 1, 2*1024*1024, 2*1024*1024)
+	// Dial to the tunnel server
+	tunnelWSConn, err := WebSocketDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/tunnel", c.config.DialTimeOut, c.config.KeepAlive, c.config.Nodelay, c.config.Token, c.config.Mode, 3, 2*1024*1024, 2*1024*1024)
 	if err != nil {
 		c.logger.Errorf("tunnel server dialer: %v", err)
 
