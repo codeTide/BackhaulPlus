@@ -86,16 +86,6 @@ func validateConfig(cfg *config.Config) error {
 		c.TCPCopyBufferBytes = bytes
 	}
 
-	// 7. Parse the optional per-client remote dial rate limit.
-	for i := range cfg.Clients {
-		c := &cfg.Clients[i]
-		drl, err := config.ParseDialRateLimit(c.DialRateLimit)
-		if err != nil {
-			return fmt.Errorf("client %q: %v", c.Name, err)
-		}
-		c.DialRateLimitConfig = drl
-	}
-
 	return nil
 }
 

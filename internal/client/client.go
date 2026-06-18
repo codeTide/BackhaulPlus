@@ -13,38 +13,24 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 
-	"strings"
-
 	"github.com/sirupsen/logrus"
 )
 
 // Client encapsulates the client configuration and state
 type Client struct {
-	config      *config.ClientConfig
-	ctx         context.Context
-	cancel      context.CancelFunc
-	logger      *logrus.Logger
-	dialLimiter *utils.DialRateLimiter
+	config *config.ClientConfig
+	ctx    context.Context
+	cancel context.CancelFunc
+	logger *logrus.Logger
 }
 
 func NewClient(cfg *config.ClientConfig, parentCtx context.Context) *Client {
 	ctx, cancel := context.WithCancel(parentCtx)
-	logger := utils.NewLogger(cfg.LogLevel, utils.ComponentLogPrefix("client", cfg.Name))
-
-	// A single rate limiter is shared by every remote dial goroutine of this
-	// client so concurrent control/pool/load dials all pass through one gate.
-	// NewDialRateLimiter returns nil when the limit is disabled.
-	var dialLimiter *utils.DialRateLimiter
-	if cfg.DialRateLimitConfig.Enabled {
-		dialLimiter = utils.NewDialRateLimiter(cfg.DialRateLimitConfig.PerSecond, logger)
-	}
-
 	return &Client{
-		config:      cfg,
-		ctx:         ctx,
-		cancel:      cancel,
-		logger:      logger,
-		dialLimiter: dialLimiter,
+		config: cfg,
+		ctx:    ctx,
+		cancel: cancel,
+		logger: utils.NewLogger(cfg.LogLevel, utils.ComponentLogPrefix("client", cfg.Name)),
 	}
 }
 
@@ -63,19 +49,12 @@ func (c *Client) Start() {
 
 	c.logger.Infof("started; transport=%s remote=%s", c.config.Transport, c.config.RemoteAddr)
 
-	if c.config.RetryInterval.Adaptive {
-		c.logger.Infof("retry interval set to %s", c.config.RetryInterval.String())
-	}
-	if c.config.DialRateLimitConfig.Enabled {
-		c.logger.Infof("dial rate limit enabled; limit=%s", strings.TrimSpace(c.config.DialRateLimitConfig.Raw))
-	}
-
 	if c.config.Transport == config.TCP {
 		tcpConfig := &transport.TcpConfig{
 			RemoteAddr:     c.config.RemoteAddr,
 			Nodelay:        c.config.Nodelay,
 			KeepAlive:      time.Duration(c.config.Keepalive) * time.Second,
-			RetryInterval:  c.config.RetryInterval,
+			RetryInterval:  time.Duration(c.config.RetryInterval) * time.Second,
 			DialTimeOut:    time.Duration(c.config.DialTimeout) * time.Second,
 			ConnPoolSize:   c.config.ConnectionPool,
 			Token:          c.config.Token,
@@ -84,7 +63,6 @@ func (c *Client) Start() {
 			SnifferLog:     c.config.SnifferLog,
 			AggressivePool: c.config.AggressivePool,
 			TCPCopyBuffer:  c.config.TCPCopyBufferBytes,
-			DialLimiter:    c.dialLimiter,
 		}
 		tcpClient := transport.NewTCPClient(c.ctx, tcpConfig, c.logger)
 		go tcpClient.Start()
@@ -94,7 +72,7 @@ func (c *Client) Start() {
 			RemoteAddr:       c.config.RemoteAddr,
 			Nodelay:          c.config.Nodelay,
 			KeepAlive:        time.Duration(c.config.Keepalive) * time.Second,
-			RetryInterval:    c.config.RetryInterval,
+			RetryInterval:    time.Duration(c.config.RetryInterval) * time.Second,
 			DialTimeOut:      time.Duration(c.config.DialTimeout) * time.Second,
 			ConnPoolSize:     c.config.ConnectionPool,
 			Token:            c.config.Token,
@@ -108,7 +86,6 @@ func (c *Client) Start() {
 			AggressivePool:   c.config.AggressivePool,
 			TunnelTCPBuffer:  c.config.TunnelTCPBufferBytes,
 			TCPCopyBuffer:    c.config.TCPCopyBufferBytes,
-			DialLimiter:      c.dialLimiter,
 		}
 		tcpMuxClient := transport.NewMuxClient(c.ctx, tcpMuxConfig, c.logger)
 		go tcpMuxClient.Start()
@@ -118,7 +95,7 @@ func (c *Client) Start() {
 			RemoteAddr:     c.config.RemoteAddr,
 			Nodelay:        c.config.Nodelay,
 			KeepAlive:      time.Duration(c.config.Keepalive) * time.Second,
-			RetryInterval:  c.config.RetryInterval,
+			RetryInterval:  time.Duration(c.config.RetryInterval) * time.Second,
 			DialTimeOut:    time.Duration(c.config.DialTimeout) * time.Second,
 			ConnPoolSize:   c.config.ConnectionPool,
 			Token:          c.config.Token,
@@ -128,7 +105,6 @@ func (c *Client) Start() {
 			Mode:           c.config.Transport,
 			AggressivePool: c.config.AggressivePool,
 			EdgeIP:         c.config.EdgeIP,
-			DialLimiter:    c.dialLimiter,
 		}
 		WsClient := transport.NewWSClient(c.ctx, WsConfig, c.logger)
 		go WsClient.Start()
@@ -138,7 +114,7 @@ func (c *Client) Start() {
 			RemoteAddr:       c.config.RemoteAddr,
 			Nodelay:          c.config.Nodelay,
 			KeepAlive:        time.Duration(c.config.Keepalive) * time.Second,
-			RetryInterval:    c.config.RetryInterval,
+			RetryInterval:    time.Duration(c.config.RetryInterval) * time.Second,
 			DialTimeOut:      time.Duration(c.config.DialTimeout) * time.Second,
 			ConnPoolSize:     c.config.ConnectionPool,
 			Token:            c.config.Token,
@@ -153,7 +129,6 @@ func (c *Client) Start() {
 			AggressivePool:   c.config.AggressivePool,
 			EdgeIP:           c.config.EdgeIP,
 			TCPCopyBuffer:    c.config.TCPCopyBufferBytes,
-			DialLimiter:      c.dialLimiter,
 		}
 		wsMuxClient := transport.NewWSMuxClient(c.ctx, wsMuxConfig, c.logger)
 		go wsMuxClient.Start()
@@ -163,7 +138,7 @@ func (c *Client) Start() {
 			RemoteAddr:     c.config.RemoteAddr,
 			Nodelay:        c.config.Nodelay,
 			KeepAlive:      time.Duration(c.config.Keepalive) * time.Second,
-			RetryInterval:  c.config.RetryInterval,
+			RetryInterval:  time.Duration(c.config.RetryInterval) * time.Second,
 			DialTimeOut:    time.Duration(c.config.DialTimeout) * time.Second,
 			ConnectionPool: c.config.ConnectionPool,
 			Token:          c.config.Token,
@@ -171,7 +146,6 @@ func (c *Client) Start() {
 			WebPort:        c.config.WebPort,
 			SnifferLog:     c.config.SnifferLog,
 			AggressivePool: c.config.AggressivePool,
-			DialLimiter:    c.dialLimiter,
 		}
 		quicClient := transport.NewQuicClient(c.ctx, quicConfig, c.logger)
 		go quicClient.ChannelDialer(true)
@@ -179,7 +153,7 @@ func (c *Client) Start() {
 	} else if c.config.Transport == config.UDP {
 		udpConfig := &transport.UdpConfig{
 			RemoteAddr:     c.config.RemoteAddr,
-			RetryInterval:  c.config.RetryInterval,
+			RetryInterval:  time.Duration(c.config.RetryInterval) * time.Second,
 			DialTimeOut:    time.Duration(c.config.DialTimeout) * time.Second,
 			ConnPoolSize:   c.config.ConnectionPool,
 			Token:          c.config.Token,
@@ -187,7 +161,6 @@ func (c *Client) Start() {
 			WebPort:        c.config.WebPort,
 			SnifferLog:     c.config.SnifferLog,
 			AggressivePool: c.config.AggressivePool,
-			DialLimiter:    c.dialLimiter,
 		}
 		udpClient := transport.NewUDPClient(c.ctx, udpConfig, c.logger)
 		go udpClient.Start()

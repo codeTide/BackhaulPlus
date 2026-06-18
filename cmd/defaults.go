@@ -1,9 +1,7 @@
 package cmd
 
 import (
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/codeTide/BackhaulPlus/internal/config"
 
@@ -120,13 +118,8 @@ func applyDefaults(cfg *config.Config) {
 		if _, err := logrus.ParseLevel(cfg.Clients[i].LogLevel); err != nil {
 			cfg.Clients[i].LogLevel = defaultLogLevel
 		}
-		if cfg.Clients[i].RetryInterval.IsZero() {
-			d := time.Duration(defaultRetryInterval) * time.Second
-			cfg.Clients[i].RetryInterval = config.RetryIntervalConfig{
-				Raw: strconv.Itoa(defaultRetryInterval),
-				Min: d,
-				Max: d,
-			}
+		if cfg.Clients[i].RetryInterval <= 0 {
+			cfg.Clients[i].RetryInterval = defaultRetryInterval
 		}
 		if cfg.Clients[i].ConnectionPool <= 0 {
 			cfg.Clients[i].ConnectionPool = defaultConnectionPool
