@@ -86,8 +86,11 @@ func TcpDialer(ctx context.Context, address string, timeout time.Duration, keepA
 			break
 		}
 
-		// Log retry attempt and wait before retrying
-		time.Sleep(backoff)
+		// Wait before retrying, but stop promptly if the context is cancelled
+		// (e.g. on stop/restart) instead of blocking for the full backoff.
+		if !sleepWithContext(ctx, backoff) {
+			return nil, ctx.Err()
+		}
 		backoff *= 2 // Exponential backoff (double the wait time after each failure)
 	}
 
@@ -206,8 +209,11 @@ func WebSocketDialer(ctx context.Context, addr string, edgeIP string, path strin
 			break
 		}
 
-		// Log the retry attempt and wait before retrying
-		time.Sleep(backoff)
+		// Wait before retrying, but stop promptly if the context is cancelled
+		// (e.g. on stop/restart) instead of blocking for the full backoff.
+		if !sleepWithContext(ctx, backoff) {
+			return nil, ctx.Err()
+		}
 		backoff *= 2 // Exponential backoff (double the wait time after each failure)
 	}
 

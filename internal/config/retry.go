@@ -34,12 +34,36 @@ func (r RetryIntervalConfig) IsZero() bool {
 	return r.Min == 0 && r.Max == 0 && r.Raw == ""
 }
 
-// String renders the policy the way it is logged, e.g. "5s" or "5s-60s".
+// String renders the policy the way it is logged, preferring the config-style
+// value the user actually wrote so an adaptive "5s-60s" logs as "5s-60s" rather
+// than "5s-1m0s". For the legacy numeric form (e.g. retry_interval = 5) the raw
+// value is a bare number, so the normalized duration ("5s") is shown instead.
 func (r RetryIntervalConfig) String() string {
+	raw := strings.TrimSpace(r.Raw)
+	// A non-empty raw that carries units (i.e. not a bare legacy number) is the
+	// most faithful, user-friendly representation. Collapse spaces so
+	// "5s - 60s" logs as "5s-60s".
+	if raw != "" && !isAllDigits(raw) {
+		return strings.ReplaceAll(raw, " ", "")
+	}
 	if r.Adaptive {
 		return fmt.Sprintf("%s-%s", r.Min, r.Max)
 	}
 	return r.Min.String()
+}
+
+// isAllDigits reports whether s is a non-empty string of ASCII digits only,
+// i.e. the legacy numeric retry_interval form.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // UnmarshalTOML lets retry_interval accept either a bare TOML integer (legacy

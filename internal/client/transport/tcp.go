@@ -136,8 +136,10 @@ func (c *TcpTransport) channelDialer() {
 				return
 			}
 
-			//set default behaviour of control channel to nodelay, also using default buffer parameters
-			tunnelTCPConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, true, 3, 0, 0)
+			//set default behaviour of control channel to nodelay, also using default buffer parameters.
+			// Internal retry is 1: the outer RetryState owns retry/backoff and the
+			// dial limiter must see every real remote connect attempt.
+			tunnelTCPConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, true, 1, 0, 0)
 			if err != nil {
 				delay := retry.NextDelay()
 				c.logger.Errorf("remote dial failed: %v; retrying in %s", err, delay)
@@ -353,8 +355,9 @@ func (c *TcpTransport) tunnelDialer() {
 
 	// Dial to the tunnel server
 	// Based on calculations 1MB of buffer on 80ms RTT will have about 100Mbit Bandwidth per connection,
-	// this is enough to get 800Mbit/s on speedtest and also not having too much buffer to bufferbloat
-	tcpConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, c.config.Nodelay, 3, 1024*1024, 1024*1024)
+	// this is enough to get 800Mbit/s on speedtest and also not having too much buffer to bufferbloat.
+	// Internal retry is 1 so each dial limiter slot maps to a single real connect attempt.
+	tcpConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, c.config.Nodelay, 1, 1024*1024, 1024*1024)
 	if err != nil {
 		c.logger.Error("tunnel server dialer: ", err)
 

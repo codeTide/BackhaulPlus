@@ -138,7 +138,9 @@ func (c *WsTransport) channelDialer() {
 				return
 			}
 
-			tunnelWSConn, err := WebSocketDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/channel", c.config.DialTimeOut, c.config.KeepAlive, true, c.config.Token, c.config.Mode, 3, 0, 0)
+			// Internal retry is 1: the outer RetryState owns retry/backoff and the
+			// dial limiter must see every real remote connect attempt.
+			tunnelWSConn, err := WebSocketDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/channel", c.config.DialTimeOut, c.config.KeepAlive, true, c.config.Token, c.config.Mode, 1, 0, 0)
 			if err != nil {
 				delay := retry.NextDelay()
 				c.logger.Errorf("remote dial failed: %v; retrying in %s", err, delay)
@@ -303,8 +305,9 @@ func (c *WsTransport) tunnelDialer() {
 		return
 	}
 
-	// Dial to the tunnel server
-	tunnelConn, err := WebSocketDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/tunnel", c.config.DialTimeOut, c.config.KeepAlive, c.config.Nodelay, c.config.Token, c.config.Mode, 3, 1024*1024, 1024*1024)
+	// Dial to the tunnel server. Internal retry is 1 so each dial limiter slot
+	// maps to a single real remote connect attempt.
+	tunnelConn, err := WebSocketDialer(c.ctx, c.config.RemoteAddr, c.config.EdgeIP, "/tunnel", c.config.DialTimeOut, c.config.KeepAlive, c.config.Nodelay, c.config.Token, c.config.Mode, 1, 1024*1024, 1024*1024)
 	if err != nil {
 		c.logger.Errorf("tunnel server dialer: %v", err)
 

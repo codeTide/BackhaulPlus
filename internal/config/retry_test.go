@@ -95,6 +95,36 @@ func TestRetryIntervalUnmarshalTOML_String(t *testing.T) {
 	}
 }
 
+func TestRetryIntervalString_Display(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want string
+	}{
+		{"5s-60s", "5s-60s"},
+		{"5s - 60s", "5s-60s"}, // spaces collapsed
+		{"500ms", "500ms"},
+		{"2m30s", "2m30s"},
+	}
+	for _, tc := range cases {
+		ri, err := ParseRetryInterval(tc.raw)
+		if err != nil {
+			t.Fatalf("ParseRetryInterval(%q) error: %v", tc.raw, err)
+		}
+		if got := ri.String(); got != tc.want {
+			t.Errorf("ParseRetryInterval(%q).String() = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+
+	// Legacy numeric form logs as a normalized duration, not a bare number.
+	var legacy RetryIntervalConfig
+	if err := legacy.UnmarshalTOML(int64(5)); err != nil {
+		t.Fatalf("UnmarshalTOML(5) error: %v", err)
+	}
+	if got := legacy.String(); got != "5s" {
+		t.Errorf("legacy retry_interval = 5 String() = %q, want %q", got, "5s")
+	}
+}
+
 func TestRetryState_Fixed(t *testing.T) {
 	policy, err := ParseRetryInterval("5s")
 	if err != nil {

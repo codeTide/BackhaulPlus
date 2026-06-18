@@ -157,7 +157,9 @@ func (c *TcpMuxTransport) channelDialer() {
 				return
 			}
 
-			tunnelConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, true, 3, 0, 0)
+			// Internal retry is 1: the outer RetryState owns retry/backoff and the
+			// dial limiter must see every real remote connect attempt.
+			tunnelConn, err := TcpDialer(c.ctx, c.config.RemoteAddr, c.config.DialTimeOut, c.config.KeepAlive, true, 1, 0, 0)
 			if err != nil {
 				delay := retry.NextDelay()
 				c.logger.Errorf("remote dial failed: %v; retrying in %s", err, delay)
@@ -370,13 +372,15 @@ func (c *TcpMuxTransport) tunnelDialer() {
 		return
 	}
 
+	// Internal retry is 1 so each dial limiter slot maps to a single real
+	// remote connect attempt.
 	tunnelConn, err := TcpDialer(
 		c.ctx,
 		c.config.RemoteAddr,
 		c.config.DialTimeOut,
 		c.config.KeepAlive,
 		c.config.Nodelay,
-		3,
+		1,
 		tcpBuffer,
 		tcpBuffer,
 	)
