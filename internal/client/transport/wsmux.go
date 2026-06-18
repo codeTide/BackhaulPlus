@@ -136,7 +136,7 @@ func (c *WsMuxTransport) Restart() {
 }
 
 func (c *WsMuxTransport) channelDialer() {
-	c.logger.Infof("attempting to establish a new %s control channel connection", c.config.Mode)
+	c.logger.Infof("attempting to establish %s control channel", c.config.Mode)
 
 	for {
 		select {

@@ -112,7 +112,7 @@ func (c *QuicTransport) ChannelDialer(coldStart bool) {
 		go c.usageMonitor.Monitor()
 	}
 	c.config.TunnelStatus = "Disconnected (Quic)"
-	c.logger.Info("attempting to establish a new quic control channel connection...")
+	c.logger.Info("attempting to establish quic control channel")
 
 	for {
 		select {

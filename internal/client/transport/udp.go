@@ -114,7 +114,7 @@ func (c *UdpTransport) Restart() {
 }
 
 func (c *UdpTransport) channelDialer() {
-	c.logger.Info("attempting to establish a new control channel connection...")
+	c.logger.Info("attempting to establish control channel")
 
 	for {
 		select {

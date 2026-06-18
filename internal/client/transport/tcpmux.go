@@ -139,7 +139,7 @@ func (c *TcpMuxTransport) Restart() {
 }
 
 func (c *TcpMuxTransport) channelDialer() {
-	c.logger.Info("attempting to establish a new tcpmux control channel connection...")
+	c.logger.Info("attempting to establish tcpmux control channel")
 
 	for {
 		select {
