@@ -11,15 +11,20 @@
 #
 # This script is idempotent: re-running it repairs/updates the installation.
 # It installs the daemon, the interactive manager (bhp), a systemd unit, and
-# performs a source build from GitHub. It never touches tunnel runtime behavior.
+# performs a source build from GitHub by default (or from a mirror when
+# BHP_REPO_URL is set). It never touches tunnel runtime behavior.
 
 set -Eeuo pipefail
 
 # --------------------------------------------------------------------------- #
 # Constants / paths
 # --------------------------------------------------------------------------- #
-REPO_URL="https://github.com/codeTide/BackhaulPlus.git"
-REPO_BRANCH="main"
+# Repository / branch can be overridden via environment variables. This is
+# useful for installing from a mirror when GitHub access is blocked or slow:
+#   BHP_REPO_URL="https://mirror.example.com/codeTide/BackhaulPlus.git" \
+#   BHP_REPO_BRANCH="main" bash install.sh
+REPO_URL="${BHP_REPO_URL:-https://github.com/codeTide/BackhaulPlus.git}"
+REPO_BRANCH="${BHP_REPO_BRANCH:-main}"
 
 BIN_DAEMON="/usr/local/bin/backhaulplus"
 BIN_COMPAT="/usr/local/bin/BackhaulPlus"
@@ -250,10 +255,26 @@ migrate_legacy_services() {
 # --------------------------------------------------------------------------- #
 # Source checkout + build
 # --------------------------------------------------------------------------- #
+# ensure_origin_url: point an existing checkout's origin at the configured
+# REPO_URL so BHP_REPO_URL overrides apply to existing clones (mirror support),
+# not just fresh clones.
+ensure_origin_url() {
+	if [[ -d "${SRC_DIR}/.git" ]]; then
+		if git -C "$SRC_DIR" remote get-url origin >/dev/null 2>&1; then
+			git -C "$SRC_DIR" remote set-url origin "$REPO_URL"
+		else
+			git -C "$SRC_DIR" remote add origin "$REPO_URL"
+		fi
+	fi
+}
+
 update_source() {
 	if [[ -d "${SRC_DIR}/.git" ]]; then
 		info "Updating source checkout in ${SRC_DIR}..."
-		git -C "$SRC_DIR" fetch --prune origin
+		ensure_origin_url
+		# Explicit refspec so origin/<branch> is reliably refreshed.
+		git -C "$SRC_DIR" fetch --prune origin \
+			"+refs/heads/${REPO_BRANCH}:refs/remotes/origin/${REPO_BRANCH}"
 		git -C "$SRC_DIR" checkout "$REPO_BRANCH"
 		git -C "$SRC_DIR" pull --ff-only origin "$REPO_BRANCH"
 	else
@@ -381,6 +402,8 @@ finalize_config_and_service() {
 # --------------------------------------------------------------------------- #
 main() {
 	printf '%s\n' "${C_CYAN}${C_BOLD}BackhaulPlus installer${C_RESET}"
+	info "Repository: ${REPO_URL}"
+	info "Branch:     ${REPO_BRANCH}"
 	require_root
 	detect_os
 	check_requirements
