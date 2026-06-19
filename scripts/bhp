@@ -131,16 +131,27 @@ backup_config() {
 	fi
 }
 
-backup_binary() {
+# Machine-readable: prints ONLY the backup path (or nothing) on stdout.
+# Safe to use in command substitution.
+backup_binary_path() {
 	ensure_backup_dir
 	if [[ -f "$BIN_DAEMON" ]]; then
 		local dest="${BACKUP_DIR}/backhaulplus-$(timestamp)"
 		cp -a "$BIN_DAEMON" "$dest"
+		printf '%s\n' "$dest"
+	else
+		printf ''
+	fi
+}
+
+# UI-oriented wrapper. Prints human messages; not for command substitution.
+backup_binary() {
+	local dest
+	dest="$(backup_binary_path)"
+	if [[ -n "$dest" ]]; then
 		ok "Binary backed up to ${dest}"
-		printf '%s' "$dest"
 	else
 		warn "No binary at ${BIN_DAEMON} to back up."
-		printf ''
 	fi
 }
 
@@ -233,10 +244,24 @@ do_update() {
 	fi
 
 	backup_config
-	local prev_backup; prev_backup="$(backup_binary)"
 
+	# Capture a CLEAN backup path for reliable rollback (no UI text on stdout).
+	local prev_backup=""
+	prev_backup="$(backup_binary_path)"
+	if [[ -n "$prev_backup" ]]; then
+		ok "Binary backed up to ${prev_backup}"
+	else
+		warn "No previous binary backup available before update."
+	fi
+
+	# Record service state before we touch anything.
+	local was_active="no"
+	if systemctl is-active --quiet "$SERVICE_NAME"; then
+		was_active="yes"
+	fi
+
+	# Build must happen before stopping the service.
 	update_source
-
 	local built=""
 	if ! built="$(build_binary)"; then
 		err "Build failed. Current binary left untouched; service not stopped."
@@ -244,34 +269,39 @@ do_update() {
 	fi
 
 	info "Build succeeded. Installing new binary..."
-	local was_active="no"
-	systemctl is-active --quiet "$SERVICE_NAME" && was_active="yes"
-	systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+	if [[ "$was_active" == "yes" ]]; then
+		systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+	fi
 
 	install_binary_atomic "$built"
 	rm -rf "$(dirname "$built")"
 
-	systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
-
-	if health_check; then
-		ok "Update completed successfully."
-		info "Installed version: $(binary_version)"
-	else
-		err "Update failed health check; rolling back to previous binary."
-		if [[ -n "$prev_backup" && -f "$prev_backup" ]]; then
-			install -m 0755 "$prev_backup" "${BIN_DAEMON}.new"
-			mv -f "${BIN_DAEMON}.new" "$BIN_DAEMON"
-			recreate_symlink
-			systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || true
-			if health_check; then
-				warn "Update failed health check; rolled back to previous binary."
-			else
-				err "Rollback restart also failed. Inspect: journalctl -u ${SERVICE_NAME} -n 50 --no-pager"
-			fi
+	if [[ "$was_active" == "yes" ]]; then
+		systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
+		if health_check; then
+			ok "Update completed successfully."
+			info "Installed version: $(binary_version)"
 		else
-			err "No previous binary backup available to roll back to."
+			err "Update failed health check; rolling back to previous binary."
+			if [[ -n "$prev_backup" && -f "$prev_backup" ]]; then
+				install -m 0755 "$prev_backup" "${BIN_DAEMON}.new"
+				mv -f "${BIN_DAEMON}.new" "$BIN_DAEMON"
+				recreate_symlink
+				systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || true
+				if health_check; then
+					warn "Update failed health check; rolled back to previous binary."
+				else
+					err "Rollback restart also failed. Inspect: journalctl -u ${SERVICE_NAME} -n 50 --no-pager"
+				fi
+			else
+				err "No previous binary backup available to roll back to."
+			fi
 		fi
-		[[ "$was_active" == "no" ]] && systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+	else
+		# Service was stopped before; leave it stopped. No health check/rollback.
+		ok "Update completed successfully."
+		info "Service was previously stopped and was left stopped."
+		info "Installed version: $(binary_version)"
 	fi
 	pause
 }
