@@ -1,0 +1,18 @@
+[Unit]
+Description=BackhaulPlus tunnel service
+Documentation=https://github.com/codeTide/BackhaulPlus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/backhaulplus -c /etc/backhaulplus/config.toml
+WorkingDirectory=/etc/backhaulplus
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

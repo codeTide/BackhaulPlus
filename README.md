@@ -69,6 +69,70 @@ This project offers a robust **multi-server reverse tunneling solution** to over
    ./BackhaulPlus
    ```
 
+## Linux install / manager
+
+For production Linux servers (Ubuntu/Debian with systemd) you can use the
+interactive installer and manager. This installs BackhaulPlus to standard
+system paths, sets up a systemd service, and provides a beautiful terminal
+menu (`bhp`) for updates, service control, backups, and recovery.
+
+Install:
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/codeTide/BackhaulPlus/main/scripts/install.sh)
+```
+
+Alternatively:
+
+```bash
+curl -Ls https://raw.githubusercontent.com/codeTide/BackhaulPlus/main/scripts/install.sh -o install.sh
+sudo bash install.sh
+```
+
+After installation, manage everything from the interactive menu:
+
+```bash
+sudo bhp
+```
+
+Installed paths:
+
+```text
+/usr/local/bin/backhaulplus
+/usr/local/bin/BackhaulPlus -> /usr/local/bin/backhaulplus
+/usr/local/bin/bhp
+/etc/backhaulplus/config.toml
+/var/lib/backhaulplus/src
+/var/backups/backhaulplus
+/etc/systemd/system/backhaulplus.service
+```
+
+The `bhp` tool is **interactive only** (no direct subcommands like
+`bhp update`). It provides:
+
+* Install / Repair
+* Update (with automatic backup and rollback on failed health check)
+* Service controls (start/stop/restart/status/enable/disable)
+* Config edit/show/backup
+* Logs (live, last 100 lines, last boot)
+* Backups (config, binary, full tarball)
+* Advanced recovery (rollback binary, restore config, reinstall service, uninstall)
+
+### Legacy migration
+
+If you previously deployed manually under `/root/BackhaulPlus`, the installer
+detects it and offers to migrate:
+
+* If `/root/BackhaulPlus/config.toml` exists, the installer can migrate it to
+  `/etc/backhaulplus/config.toml`.
+* It always backs up the legacy config first (to `/var/backups/backhaulplus/`).
+* It never overwrites an existing `/etc/backhaulplus/config.toml` without asking.
+* It will **not** delete the old `/root/BackhaulPlus` folder automatically — it
+  is left untouched so you can archive or remove it manually after verifying the
+  new service.
+* If an old systemd service (e.g. `backhaul.service` or `BackhaulPlus.service`)
+  is detected, the installer offers to disable it; its unit file is left in place.
+
 ## Usage
 
 The main executable for this project is `BackhaulPlus`. It requires a TOML configuration file for both the server and client components.
