@@ -96,8 +96,9 @@ timestamp() { date +%Y%m%d-%H%M%S; }
 # Note: fetching install.sh itself from a private repo still needs an
 # authenticated download (e.g. a tokenized curl) before running this script.
 
-get_git_token_interactive() {
-	local token=""
+# get_git_token_from_env: print the token from the environment on stdout, or
+# nothing. Does not prompt.
+get_git_token_from_env() {
 	if [[ -n "${BHP_GITHUB_TOKEN:-}" ]]; then
 		printf '%s' "$BHP_GITHUB_TOKEN"
 		return
@@ -106,6 +107,13 @@ get_git_token_interactive() {
 		printf '%s' "$BHP_GIT_TOKEN"
 		return
 	fi
+	printf ''
+}
+
+# get_git_token_interactive: prompt the user for a token without echoing input.
+# Prints the token on stdout (or nothing if declined / not a TTY).
+get_git_token_interactive() {
+	local token=""
 
 	if [[ -t 0 ]]; then
 		if ask_yes_no "Git authentication may be required. Enter a GitHub token now?" "n"; then
@@ -118,12 +126,13 @@ get_git_token_interactive() {
 
 # run_git_with_token: run a git command authenticating with the given token via
 # a temporary GIT_ASKPASS helper. The token is passed only through the
-# environment for the single invocation; the askpass script is removed after.
+# environment for the single invocation; the askpass script is always removed
+# afterwards, even on failure.
 run_git_with_token() {
 	local token="$1"
 	shift
 
-	local askpass
+	local askpass rc
 	askpass="$(mktemp)"
 	chmod 700 "$askpass"
 	cat > "$askpass" <<'EOF'
@@ -135,27 +144,45 @@ case "$1" in
 esac
 EOF
 
-	BHP_EFFECTIVE_GIT_TOKEN="$token" \
-	GIT_ASKPASS="$askpass" \
-	GIT_TERMINAL_PROMPT=0 \
-		"$@"
+	if BHP_EFFECTIVE_GIT_TOKEN="$token" \
+	   GIT_ASKPASS="$askpass" \
+	   GIT_TERMINAL_PROMPT=0 \
+	   "$@"; then
+		rc=0
+	else
+		rc=$?
+	fi
 
-	local rc=$?
 	rm -f "$askpass"
 	return "$rc"
 }
 
-# git_run: run a git network command. On failure, offer a token-authenticated
-# retry. Use ONLY for operations that may hit the network (clone/fetch/pull).
+# git_run: run a git network command. Use ONLY for operations that may hit the
+# network (clone/fetch/pull); never for local-only commands.
+#
+# Order of attempts:
+#   1. If a token is set in the environment, use it on the first attempt.
+#   2. Otherwise run once unauthenticated with GIT_TERMINAL_PROMPT=0 so git
+#      never opens its own credential prompt.
+#   3. If that fails, offer our controlled no-echo token prompt and retry.
 git_run() {
-	if "$@"; then
+	local token
+	token="$(get_git_token_from_env)"
+
+	# If a token was provided through the environment, use it on the first try.
+	if [[ -n "$token" ]]; then
+		run_git_with_token "$token" "$@"
+		return $?
+	fi
+
+	# No token provided. Prevent git from opening its own credential prompt.
+	if GIT_TERMINAL_PROMPT=0 "$@"; then
 		return 0
 	fi
 
 	local rc=$?
 	warn "Git command failed. Authentication or network access may be required."
 
-	local token
 	token="$(get_git_token_interactive)"
 	if [[ -n "$token" ]]; then
 		info "Retrying git command with token authentication..."

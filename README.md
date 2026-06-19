@@ -155,12 +155,15 @@ environment variables:
 * `BHP_GITHUB_TOKEN`
 * `BHP_GIT_TOKEN` (alias)
 
-If either is set, it is used non-interactively for git network operations. If a
-git operation fails and no token is set, `bhp` (and the installer, on a TTY)
-will ask whether you want to enter a token; the prompt does **not** echo your
-input. The token is used only for the single git operation that needs it via a
-temporary `GIT_ASKPASS` helper — it is never printed, never written to logs, and
-never stored in the `origin` remote URL or `.git/config`.
+If either is set, it is used on the **first** git network attempt
+(clone/fetch/pull), so private repositories work without a failed unauthenticated
+try first. If no token is set, the first attempt runs with
+`GIT_TERMINAL_PROMPT=0` so git never opens its own credential prompt; if that
+attempt fails, `bhp` (and the installer, on a TTY) asks whether you want to enter
+a token, and the prompt does **not** echo your input. The token is used only for
+the single git operation that needs it via a temporary `GIT_ASKPASS` helper — it
+is never printed, never written to logs, and never stored in the `origin` remote
+URL or `.git/config`.
 
 ```bash
 sudo BHP_GITHUB_TOKEN="ghp_xxx" bhp
