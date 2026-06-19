@@ -96,10 +96,13 @@ sudo bhp
 ```
 
 `bhp` provides a colored interactive menu with an ASCII project logo, colored
-section separators, and a clear status block. It uses no emojis and requires no
-external UI dependencies (no `dialog`, `whiptail`, `figlet`, or `toilet`).
-Colors are enabled through `tput` when the terminal supports them and degrade
-gracefully to plain text otherwise (also honoring `NO_COLOR`).
+section separators, a clear status block, and color-coded menu choices (option
+numbers in cyan, normal actions bold, advanced/recovery actions in yellow,
+destructive actions such as Uninstall in red, and Back/Exit dimmed). It uses no
+emojis and requires no external UI dependencies (no `dialog`, `whiptail`,
+`figlet`, or `toilet`). Colors are enabled through `tput` when the terminal
+supports them and degrade gracefully to plain text otherwise (also honoring
+`NO_COLOR`).
 
 If your terminal renders Unicode box characters poorly, force ASCII-safe
 separators:
@@ -143,10 +146,52 @@ When updating an existing checkout, `bhp` and the installer also point the
 checkout's `origin` remote at the configured URL, so a mirror override applies
 to existing installs and not just fresh clones.
 
+### Private repository access (GitHub token)
+
+If the repository becomes private, `git clone`, `git fetch`, and `git pull` need
+authentication. Both the installer and `bhp` support a GitHub token via
+environment variables:
+
+* `BHP_GITHUB_TOKEN`
+* `BHP_GIT_TOKEN` (alias)
+
+If either is set, it is used non-interactively for git network operations. If a
+git operation fails and no token is set, `bhp` (and the installer, on a TTY)
+will ask whether you want to enter a token; the prompt does **not** echo your
+input. The token is used only for the single git operation that needs it via a
+temporary `GIT_ASKPASS` helper — it is never printed, never written to logs, and
+never stored in the `origin` remote URL or `.git/config`.
+
+```bash
+sudo BHP_GITHUB_TOKEN="ghp_xxx" bhp
+```
+
+Security notes:
+
+* Passing a token directly on the command line may be saved in your shell
+  history. Prefer exporting it temporarily in the current shell, or simply
+  entering it when prompted (no echo).
+* Use a fine-scoped token with **repository read access only**.
+* With `sudo`, environment variables may be dropped — set the variable on the
+  `sudo` command itself (as above) or use `--preserve-env=BHP_GITHUB_TOKEN`.
+
+The installer can use a token for the source `git clone`/`fetch`/`pull`. Note
+that downloading `install.sh` itself from a private repo cannot be done with an
+unauthenticated `curl`. Download it manually (or with a tokenized GitHub `curl`)
+and then run:
+
+```bash
+sudo BHP_GITHUB_TOKEN="..." bash install.sh
+```
+
 ### Upgrading from the first manager version
 
 From this version onward, choosing **Update** in `bhp` also refreshes the
-manager script at `/usr/local/bin/bhp`, so future upgrades are automatic.
+manager script at `/usr/local/bin/bhp`, so future upgrades are automatic. When
+the manager script itself changes during an update, `bhp` offers to restart
+itself (via `exec`) once all update and rollback work has finished, so the new
+menu UI takes effect immediately in the current session. If you decline, the
+update is still applied and the new UI appears the next time you run `bhp`.
 
 The very first manager release did not self-update, so if you installed it
 before this version you may need a **one-time** action to pick up the new menu.
@@ -189,7 +234,8 @@ The `bhp` tool is **interactive only** (no direct subcommands like
   ahead of, or diverged from the remote. When already up-to-date it does not
   rebuild unless you confirm, and it never runs destructive git commands such
   as `git reset --hard`. Update also refreshes the manager script itself at
-  `/usr/local/bin/bhp` from the source checkout.
+  `/usr/local/bin/bhp` from the source checkout, and offers to restart `bhp` if
+  the manager script changed (after all update/rollback work is done).
 * Service controls (start/stop/restart/status/enable/disable)
 * Config edit/show/backup
 * Logs (live, last 100 lines, last boot)
@@ -210,6 +256,25 @@ detects it and offers to migrate:
   new service.
 * If an old systemd service (e.g. `backhaul.service` or `BackhaulPlus.service`)
   is detected, the installer offers to disable it; its unit file is left in place.
+
+#### Optional cleanup after migration
+
+After the new `backhaulplus.service` is installed and **confirmed running**, the
+installer can optionally clean up the leftover legacy files. This is entirely
+opt-in and every prompt **defaults to No**:
+
+* **Legacy folder:** you may back up and remove `/root/BackhaulPlus`. A final
+  `tar.gz` backup is written under `/var/backups/backhaulplus/` (e.g.
+  `legacy-root-BackhaulPlus-YYYYmmdd-HHMMSS.tar.gz`) *before* the folder is
+  removed.
+* **Old service units:** for each old service unit that was disabled, you may
+  back up and remove its unit file. The unit file is copied to
+  `/var/backups/backhaulplus/` first, then removed, followed by
+  `systemctl daemon-reload`.
+
+Cleanup is only offered after the new service is running, nothing is ever
+deleted without an explicit `y` confirmation, a backup is always made before
+deletion, and config backups are never removed.
 
 ## Usage
 
