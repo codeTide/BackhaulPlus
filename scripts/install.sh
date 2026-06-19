@@ -26,6 +26,15 @@ set -Eeuo pipefail
 REPO_URL="${BHP_REPO_URL:-https://github.com/codeTide/BackhaulPlus.git}"
 REPO_BRANCH="${BHP_REPO_BRANCH:-main}"
 
+# Offline source mode: install/update from a local source directory or archive
+# instead of contacting GitHub. Set exactly one of:
+#   BHP_SOURCE_DIR=/path/to/extracted/source-dir
+#   BHP_SOURCE_ARCHIVE=/path/to/source.tar.gz|.tgz|.zip
+# In this mode the installer never runs git clone/fetch/pull and git is not
+# required; Go is still required because the daemon is built from source.
+BHP_SOURCE_DIR="${BHP_SOURCE_DIR:-}"
+BHP_SOURCE_ARCHIVE="${BHP_SOURCE_ARCHIVE:-}"
+
 BIN_DAEMON="/usr/local/bin/backhaulplus"
 BIN_COMPAT="/usr/local/bin/BackhaulPlus"
 BIN_MANAGER="/usr/local/bin/bhp"
@@ -242,6 +251,22 @@ apt_install() {
 check_requirements() {
 	command -v systemctl >/dev/null 2>&1 || die "systemctl not found. This installer requires a systemd-based system."
 
+	# In offline source mode we never touch GitHub, so git/curl are not needed.
+	# Only the extraction tool for the chosen archive type is required (plus Go,
+	# checked below for all modes).
+	if offline_source_requested; then
+		command -v go >/dev/null 2>&1 || die "go is required to build from source. See https://go.dev/dl/"
+		if [[ -n "${BHP_SOURCE_ARCHIVE:-}" ]]; then
+			case "$(offline_archive_kind "$BHP_SOURCE_ARCHIVE")" in
+				tar) command -v tar   >/dev/null 2>&1 || die "tar is required to extract ${BHP_SOURCE_ARCHIVE}." ;;
+				zip) command -v unzip >/dev/null 2>&1 || die "unzip is required to extract ${BHP_SOURCE_ARCHIVE}." ;;
+				*)   die "Unsupported archive type: ${BHP_SOURCE_ARCHIVE} (expected .tar.gz, .tgz, or .zip)" ;;
+			esac
+		fi
+		ok "Offline source mode: required tools are present (GitHub access not needed)."
+		return
+	fi
+
 	local missing=()
 	command -v git >/dev/null 2>&1 || missing+=("git")
 	command -v go  >/dev/null 2>&1 || missing+=("golang-go")
@@ -450,6 +475,159 @@ offer_legacy_cleanup() {
 }
 
 # --------------------------------------------------------------------------- #
+# Offline source mode
+# --------------------------------------------------------------------------- #
+# offline_source_requested: true when the user asked to install/update from a
+# local source directory or archive instead of GitHub.
+offline_source_requested() {
+	[[ -n "${BHP_SOURCE_DIR:-}" || -n "${BHP_SOURCE_ARCHIVE:-}" ]]
+}
+
+# offline_archive_kind: classify the archive path passed via BHP_SOURCE_ARCHIVE.
+# Echoes "tar" for .tar.gz/.tgz, "zip" for .zip, or "unknown".
+offline_archive_kind() {
+	local f="$1"
+	case "$f" in
+		*.tar.gz|*.tgz) printf 'tar' ;;
+		*.zip)          printf 'zip' ;;
+		*)              printf 'unknown' ;;
+	esac
+}
+
+# validate_local_source: ensure a directory looks like a BackhaulPlus checkout.
+validate_local_source() {
+	local dir="$1"
+
+	[[ -d "$dir" ]] || die "Offline source directory not found: $dir"
+	[[ -f "$dir/go.mod" ]] || die "Invalid offline source: missing go.mod"
+	[[ -f "$dir/scripts/bhp" ]] || die "Invalid offline source: missing scripts/bhp"
+
+	if [[ ! -f "$dir/packaging/backhaulplus.service" ]]; then
+		# Not fatal: the installer has a built-in fallback unit template.
+		warn "Offline source is missing packaging/backhaulplus.service; using built-in unit template."
+	fi
+
+	if ! grep -q 'module github.com/codeTide/BackhaulPlus' "$dir/go.mod"; then
+		warn "go.mod module does not look like github.com/codeTide/BackhaulPlus"
+		if ! ask_yes_no "Continue anyway?" "n"; then
+			die "Offline source rejected."
+		fi
+	fi
+}
+
+# find_source_root: given a directory that an archive was extracted into, locate
+# the actual source root (the directory that contains go.mod). Echoes the path.
+find_source_root() {
+	local base="$1"
+
+	if [[ -f "$base/go.mod" ]]; then
+		printf '%s' "$base"
+		return 0
+	fi
+
+	# Exactly one child directory that contains go.mod (common for GitHub
+	# tarballs that wrap everything in <repo>-<ref>/).
+	local -a children=()
+	local c
+	for c in "$base"/*/; do
+		[[ -d "$c" ]] && children+=("${c%/}")
+	done
+	if [[ ${#children[@]} -eq 1 && -f "${children[0]}/go.mod" ]]; then
+		printf '%s' "${children[0]}"
+		return 0
+	fi
+
+	# Fall back to searching one level deep for a go.mod.
+	local d
+	for d in "$base"/*/; do
+		[[ -f "${d}go.mod" ]] && { printf '%s' "${d%/}"; return 0; }
+	done
+
+	return 1
+}
+
+# prepare_offline_source: resolve the source directory to install from. Echoes
+# the prepared source directory path on stdout. For archives, extracts into a
+# temporary directory (left for the OS to reclaim) and returns the source root.
+prepare_offline_source() {
+	if [[ -n "${BHP_SOURCE_DIR:-}" ]]; then
+		validate_local_source "$BHP_SOURCE_DIR" >&2
+		printf '%s' "$BHP_SOURCE_DIR"
+		return 0
+	fi
+
+	local archive="$BHP_SOURCE_ARCHIVE"
+	[[ -f "$archive" ]] || die "Offline source archive not found: $archive"
+
+	local kind; kind="$(offline_archive_kind "$archive")"
+	local tmp; tmp="$(mktemp -d /tmp/backhaulplus-offline.XXXXXX)"
+
+	case "$kind" in
+		tar)
+			command -v tar >/dev/null 2>&1 || die "tar is required to extract ${archive}."
+			info "Extracting ${archive}..." >&2
+			tar -xzf "$archive" -C "$tmp" || die "Failed to extract ${archive}."
+			;;
+		zip)
+			command -v unzip >/dev/null 2>&1 || die "unzip is required to extract ${archive}."
+			info "Extracting ${archive}..." >&2
+			unzip -q "$archive" -d "$tmp" || die "Failed to extract ${archive}."
+			;;
+		*)
+			die "Unsupported archive type: ${archive} (expected .tar.gz, .tgz, or .zip)"
+			;;
+	esac
+
+	local root
+	if ! root="$(find_source_root "$tmp")"; then
+		die "Could not find a source root containing go.mod inside ${archive}."
+	fi
+	validate_local_source "$root" >&2
+	printf '%s' "$root"
+}
+
+# backup_existing_source: archive the current source checkout (if any) before it
+# is replaced by an offline source.
+backup_existing_source() {
+	if [[ -d "$SRC_DIR" && -n "$(ls -A "$SRC_DIR" 2>/dev/null)" ]]; then
+		install -d -m 0750 "$BACKUP_DIR"
+		local dest="${BACKUP_DIR}/source-$(timestamp).tar.gz"
+		tar -czf "$dest" -C "$STATE_DIR" "$(basename "$SRC_DIR")"
+		ok "Backed up current source checkout to ${dest}"
+	fi
+}
+
+# install_offline_source_to_src_dir: copy a validated local source into SRC_DIR
+# atomically. Builds the replacement in SRC_DIR.new and only swaps after a
+# successful copy, so a partial failure never destroys the current source.
+install_offline_source_to_src_dir() {
+	local source_root="$1"
+
+	validate_local_source "$source_root"
+	backup_existing_source
+
+	rm -rf "${SRC_DIR}.new"
+	mkdir -p "${SRC_DIR}.new"
+
+	# Copy all contents, including dotfiles if present.
+	if ! ( cd "$source_root" && tar -cf - . ) | ( cd "${SRC_DIR}.new" && tar -xf - ); then
+		rm -rf "${SRC_DIR}.new"
+		die "Failed to copy offline source into ${SRC_DIR}.new"
+	fi
+
+	rm -rf "$SRC_DIR"
+	mv "${SRC_DIR}.new" "$SRC_DIR"
+
+	# Metadata for version display when .git is unavailable.
+	{
+		printf 'offline_source: %s\n' "$source_root"
+		printf 'installed_at: %s\n' "$(date -Is)"
+	} > "${SRC_DIR}/.bhp-source"
+
+	ok "Offline source installed to ${SRC_DIR}"
+}
+
+# --------------------------------------------------------------------------- #
 # Source checkout + build
 # --------------------------------------------------------------------------- #
 # ensure_origin_url: point an existing checkout's origin at the configured
@@ -599,14 +777,34 @@ finalize_config_and_service() {
 # --------------------------------------------------------------------------- #
 main() {
 	printf '%s\n' "${C_CYAN}${C_BOLD}BackhaulPlus installer${C_RESET}"
-	info "Repository: ${REPO_URL}"
-	info "Branch:     ${REPO_BRANCH}"
+
+	if [[ -n "${BHP_SOURCE_DIR:-}" && -n "${BHP_SOURCE_ARCHIVE:-}" ]]; then
+		die "Set only one of BHP_SOURCE_DIR or BHP_SOURCE_ARCHIVE, not both."
+	fi
+
+	if offline_source_requested; then
+		info "Mode:       offline source install (GitHub not contacted)"
+		[[ -n "${BHP_SOURCE_DIR:-}" ]]     && info "Source dir: ${BHP_SOURCE_DIR}"
+		[[ -n "${BHP_SOURCE_ARCHIVE:-}" ]] && info "Archive:    ${BHP_SOURCE_ARCHIVE}"
+	else
+		info "Repository: ${REPO_URL}"
+		info "Branch:     ${REPO_BRANCH}"
+	fi
+
 	require_root
 	detect_os
 	check_requirements
 	create_dirs
 	migrate_legacy
-	update_source
+
+	if offline_source_requested; then
+		local source_root
+		source_root="$(prepare_offline_source)"
+		install_offline_source_to_src_dir "$source_root"
+	else
+		update_source
+	fi
+
 	backup_existing_binary
 
 	local built=""

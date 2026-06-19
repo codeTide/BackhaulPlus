@@ -21,6 +21,15 @@ set -Eeuo pipefail
 REPO_URL="${BHP_REPO_URL:-https://github.com/codeTide/BackhaulPlus.git}"
 REPO_BRANCH="${BHP_REPO_BRANCH:-main}"
 
+# Offline source mode: update from a local source directory or archive instead
+# of contacting GitHub. Set exactly one of:
+#   BHP_SOURCE_DIR=/path/to/extracted/source-dir
+#   BHP_SOURCE_ARCHIVE=/path/to/source.tar.gz|.tgz|.zip
+# When set, choosing Update uses offline mode automatically. Offline mode never
+# runs git fetch/pull and does not require GitHub access; Go is still required.
+BHP_SOURCE_DIR="${BHP_SOURCE_DIR:-}"
+BHP_SOURCE_ARCHIVE="${BHP_SOURCE_ARCHIVE:-}"
+
 BIN_DAEMON="/usr/local/bin/backhaulplus"
 BIN_COMPAT="/usr/local/bin/BackhaulPlus"
 BIN_MANAGER="/usr/local/bin/bhp"
@@ -467,6 +476,161 @@ print_update_preview() {
 }
 
 # --------------------------------------------------------------------------- #
+# Offline source mode
+# --------------------------------------------------------------------------- #
+# offline_source_requested: true when an offline source env var is set.
+offline_source_requested() {
+	[[ -n "${BHP_SOURCE_DIR:-}" || -n "${BHP_SOURCE_ARCHIVE:-}" ]]
+}
+
+# offline_archive_kind: classify a path. Echoes "tar", "zip", "dir", or
+# "unknown". A path with no archive extension that is an existing directory is
+# treated as a source directory.
+offline_archive_kind() {
+	local p="$1"
+	case "$p" in
+		*.tar.gz|*.tgz) printf 'tar' ;;
+		*.zip)          printf 'zip' ;;
+		*)
+			if [[ -d "$p" ]]; then printf 'dir'; else printf 'unknown'; fi
+			;;
+	esac
+}
+
+# validate_local_source: ensure a directory looks like a BackhaulPlus checkout.
+# Returns non-zero (does not exit) so the caller can return to the menu.
+validate_local_source() {
+	local dir="$1"
+
+	[[ -d "$dir" ]]              || { err "Offline source directory not found: $dir"; return 1; }
+	[[ -f "$dir/go.mod" ]]       || { err "Invalid offline source: missing go.mod"; return 1; }
+	[[ -f "$dir/scripts/bhp" ]]  || { err "Invalid offline source: missing scripts/bhp"; return 1; }
+
+	if [[ ! -f "$dir/packaging/backhaulplus.service" ]]; then
+		warn "Offline source is missing packaging/backhaulplus.service; the built-in unit template will be used."
+	fi
+
+	if ! grep -q 'module github.com/codeTide/BackhaulPlus' "$dir/go.mod"; then
+		warn "go.mod module does not look like github.com/codeTide/BackhaulPlus"
+		if ! ask_yes_no "Continue anyway?" "n"; then
+			err "Offline source rejected."
+			return 1
+		fi
+	fi
+	return 0
+}
+
+# find_source_root: given a directory an archive was extracted into, locate the
+# actual source root (the directory that contains go.mod). Echoes the path.
+find_source_root() {
+	local base="$1"
+
+	if [[ -f "$base/go.mod" ]]; then
+		printf '%s' "$base"; return 0
+	fi
+
+	local -a children=()
+	local c
+	for c in "$base"/*/; do
+		[[ -d "$c" ]] && children+=("${c%/}")
+	done
+	if [[ ${#children[@]} -eq 1 && -f "${children[0]}/go.mod" ]]; then
+		printf '%s' "${children[0]}"; return 0
+	fi
+
+	local d
+	for d in "$base"/*/; do
+		[[ -f "${d}go.mod" ]] && { printf '%s' "${d%/}"; return 0; }
+	done
+
+	return 1
+}
+
+# prepare_offline_source: resolve the source directory to use from a given path
+# (directory or archive). Echoes the prepared source directory on stdout, or
+# returns non-zero on failure. Archives are extracted into a temp directory.
+prepare_offline_source() {
+	local src="$1"
+	local kind; kind="$(offline_archive_kind "$src")"
+
+	case "$kind" in
+		dir)
+			validate_local_source "$src" >&2 || return 1
+			printf '%s' "$src"
+			return 0
+			;;
+		tar)
+			[[ -f "$src" ]] || { err "Offline source archive not found: $src"; return 1; }
+			command -v tar >/dev/null 2>&1 || { err "tar is required to extract ${src}."; return 1; }
+			;;
+		zip)
+			[[ -f "$src" ]] || { err "Offline source archive not found: $src"; return 1; }
+			command -v unzip >/dev/null 2>&1 || { err "unzip is required to extract ${src}."; return 1; }
+			;;
+		*)
+			err "Unsupported offline source: ${src} (expected a directory, .tar.gz, .tgz, or .zip)"
+			return 1
+			;;
+	esac
+
+	local tmp; tmp="$(mktemp -d /tmp/backhaulplus-offline.XXXXXX)"
+	info "Extracting ${src}..." >&2
+	if [[ "$kind" == "tar" ]]; then
+		tar -xzf "$src" -C "$tmp" || { err "Failed to extract ${src}."; rm -rf "$tmp"; return 1; }
+	else
+		unzip -q "$src" -d "$tmp" || { err "Failed to extract ${src}."; rm -rf "$tmp"; return 1; }
+	fi
+
+	local root
+	if ! root="$(find_source_root "$tmp")"; then
+		err "Could not find a source root containing go.mod inside ${src}."
+		rm -rf "$tmp"
+		return 1
+	fi
+	validate_local_source "$root" >&2 || { rm -rf "$tmp"; return 1; }
+	printf '%s' "$root"
+}
+
+# backup_existing_source: archive the current source checkout before replacing.
+backup_existing_source() {
+	if [[ -d "$SRC_DIR" && -n "$(ls -A "$SRC_DIR" 2>/dev/null)" ]]; then
+		ensure_backup_dir
+		local dest="${BACKUP_DIR}/source-$(timestamp).tar.gz"
+		tar -czf "$dest" -C "$STATE_DIR" "$(basename "$SRC_DIR")"
+		ok "Backed up current source checkout to ${dest}"
+	fi
+}
+
+# install_offline_source_to_src_dir: atomically copy a validated local source
+# into SRC_DIR. Builds in SRC_DIR.new and only swaps after a successful copy.
+install_offline_source_to_src_dir() {
+	local source_root="$1"
+
+	validate_local_source "$source_root" || return 1
+	backup_existing_source
+
+	rm -rf "${SRC_DIR}.new"
+	mkdir -p "${SRC_DIR}.new"
+
+	if ! ( cd "$source_root" && tar -cf - . ) | ( cd "${SRC_DIR}.new" && tar -xf - ); then
+		rm -rf "${SRC_DIR}.new"
+		err "Failed to copy offline source into ${SRC_DIR}.new"
+		return 1
+	fi
+
+	rm -rf "$SRC_DIR"
+	mv "${SRC_DIR}.new" "$SRC_DIR"
+
+	{
+		printf 'offline_source: %s\n' "$source_root"
+		printf 'installed_at: %s\n' "$(date -Is)"
+	} > "${SRC_DIR}/.bhp-source"
+
+	ok "Offline source installed to ${SRC_DIR}"
+	return 0
+}
+
+# --------------------------------------------------------------------------- #
 # Update / build
 # --------------------------------------------------------------------------- #
 # ensure_origin_url: point the existing checkout's origin at the configured
@@ -540,18 +704,25 @@ update_source() {
 	fi
 }
 
-build_binary() {
-	# Build into a temp file; echo the path on success, non-zero on failure.
+# build_binary_from: build the daemon from a given source directory into a temp
+# file; echo the path on success, non-zero on failure.
+build_binary_from() {
+	local dir="$1"
 	local tmpdir out
 	tmpdir="$(mktemp -d /tmp/backhaulplus-build.XXXXXX)"
 	out="${tmpdir}/backhaulplus"
 	info "Building daemon..." >&2
-	if ( cd "$SRC_DIR" && go build -o "$out" . ); then
+	if ( cd "$dir" && go build -o "$out" . ); then
 		printf '%s\n' "$out"
 	else
 		rm -rf "$tmpdir"
 		return 1
 	fi
+}
+
+build_binary() {
+	# Build from the installed source checkout.
+	build_binary_from "$SRC_DIR"
 }
 
 install_binary_atomic() {
@@ -561,7 +732,37 @@ install_binary_atomic() {
 	recreate_symlink
 }
 
+# do_update: entry point for the Update menu item. If an offline source env var
+# is set, run the offline update directly. Otherwise offer a choice between the
+# online (GitHub) update and an offline update from a local source/archive.
 do_update() {
+	if offline_source_requested; then
+		do_update_offline
+		return
+	fi
+
+	clear
+	print_screen_header "Update"
+	printf '\n'
+	info "Choose an update method."
+	printf '\n'
+	menu_item 1 "Online from repository"        "$C_BGREEN"
+	menu_item 2 "Offline from local source/archive" "$C_BCYAN"
+	menu_item 0 "Back"                          "$C_DIM"
+	printf '\n'
+	sep
+	local choice
+	read -r -p "$(printf ' %sEnter your choice [0-2]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
+	case "$choice" in
+		1) do_update_online ;;
+		2) do_update_offline ;;
+		0) return ;;
+		*) warn "Invalid choice."; pause ;;
+	esac
+}
+
+# do_update_online: update from the configured GitHub repository (or mirror).
+do_update_online() {
 	require_root || { pause; return; }
 	if ! command -v go >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
 		err "git and go are required to update. Install them and retry."
@@ -721,6 +922,126 @@ maybe_restart_manager() {
 	fi
 }
 
+# do_update_offline: update from a local source directory or archive without
+# contacting GitHub. Preserves the same safety guarantees as the online update:
+# build before stopping the service, atomic binary install, health check, and
+# rollback to the previous binary on failure.
+#
+# $1 (optional): a source path (directory or archive). If omitted, the path is
+# taken from BHP_SOURCE_DIR/BHP_SOURCE_ARCHIVE, or the user is prompted.
+do_update_offline() {
+	require_root || { pause; return; }
+	if ! command -v go >/dev/null 2>&1; then
+		err "go is required to build from source. Install it and retry."
+		pause; return
+	fi
+
+	# 1. Determine the source path: explicit arg, env var, or interactive prompt.
+	local src="${1:-}"
+	if [[ -z "$src" ]]; then
+		if [[ -n "${BHP_SOURCE_DIR:-}" ]]; then
+			src="$BHP_SOURCE_DIR"
+		elif [[ -n "${BHP_SOURCE_ARCHIVE:-}" ]]; then
+			src="$BHP_SOURCE_ARCHIVE"
+		else
+			read -r -p "Enter local source directory or archive path: " src || src=""
+		fi
+	fi
+	if [[ -z "$src" ]]; then
+		err "No source path provided."
+		pause; return
+	fi
+
+	# 2. Prepare and validate the offline source into a staging directory.
+	info "Preparing offline source: ${src}"
+	local staging
+	if ! staging="$(prepare_offline_source "$src")"; then
+		err "Offline source could not be prepared."
+		pause; return
+	fi
+
+	# 3. Build from the staging source BEFORE touching SRC_DIR or the service.
+	local built=""
+	if ! built="$(build_binary_from "$staging")"; then
+		err "Build failed. Current binary, source, and service left untouched."
+		pause; return
+	fi
+	info "Build succeeded from offline source."
+
+	# 4. Backup config and current binary for rollback.
+	backup_config
+	local prev_backup=""
+	prev_backup="$(backup_binary_path)"
+	if [[ -n "$prev_backup" ]]; then
+		ok "Binary backed up to ${prev_backup}"
+	else
+		warn "No previous binary backup available before update."
+	fi
+
+	# 5. Replace SRC_DIR with the offline source (backs up the old checkout).
+	if ! install_offline_source_to_src_dir "$staging"; then
+		err "Failed to install offline source; current binary left untouched."
+		rm -rf "$(dirname "$built")"
+		pause; return
+	fi
+
+	# 6. Refresh the manager script from the new source.
+	manager_updated="no"
+	if install_manager_atomic; then
+		manager_updated="yes"
+	fi
+
+	# Record service state before we touch anything.
+	local was_active="no"
+	if systemctl is-active --quiet "$SERVICE_NAME"; then
+		was_active="yes"
+	fi
+
+	# 7. Stop the service only after the build succeeded.
+	info "Installing new binary..."
+	if [[ "$was_active" == "yes" ]]; then
+		systemctl stop "$SERVICE_NAME" >/dev/null 2>&1 || true
+	fi
+
+	# 8. Install the new binary atomically.
+	install_binary_atomic "$built"
+	rm -rf "$(dirname "$built")"
+
+	# 9. Restart / health-check / rollback, mirroring the online flow.
+	if [[ "$was_active" == "yes" ]]; then
+		systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
+		if health_check; then
+			ok "Offline update completed successfully."
+			info "Installed version: $(binary_version)"
+		else
+			err "Update failed health check; rolling back to previous binary."
+			if [[ -n "$prev_backup" && -f "$prev_backup" ]]; then
+				install -m 0755 "$prev_backup" "${BIN_DAEMON}.new"
+				mv -f "${BIN_DAEMON}.new" "$BIN_DAEMON"
+				recreate_symlink
+				systemctl restart "$SERVICE_NAME" >/dev/null 2>&1 || true
+				if health_check; then
+					warn "Update failed health check; rolled back to previous binary."
+				else
+					err "Rollback restart also failed. Inspect: journalctl -u ${SERVICE_NAME} -n 50 --no-pager"
+				fi
+			else
+				err "No previous binary backup available to roll back to."
+			fi
+		fi
+	else
+		ok "Offline update completed successfully."
+		info "Service was previously stopped and was left stopped."
+		info "Installed version: $(binary_version)"
+	fi
+	if [[ "$manager_updated" == "yes" ]]; then
+		info "The manager script was updated."
+	fi
+	pause
+	# 10. Offer a self-restart only after all update/rollback work has finished.
+	maybe_restart_manager
+}
+
 # --------------------------------------------------------------------------- #
 # Install / Repair
 # --------------------------------------------------------------------------- #
@@ -822,7 +1143,7 @@ menu_service() {
 		menu_item 3 "Restart"         "$C_BBLUE"
 		menu_item 4 "Status"          "$C_CYAN"
 		menu_item 5 "Enable on boot"  "$C_GREEN"
-		menu_item 6 "Disable on boot" "$C_YELLOW"
+		menu_item 6 "Disable on boot" "$C_BYELLOW"
 		menu_item 0 "Back"            "$C_DIM"
 		printf '\n'
 		sep
@@ -1132,8 +1453,8 @@ main_menu() {
 		menu_item 3 "Service"          "$C_BBLUE"
 		menu_item 4 "Config"           "$C_BMAGENTA"
 		menu_item 5 "Logs"             "$C_CYAN"
-		menu_item 6 "Backup"           "$C_BYELLOW"
-		menu_item 7 "Advanced"         "$C_YELLOW"
+		menu_item 6 "Backup"           "$C_MAGENTA"
+		menu_item 7 "Advanced"         "$C_BYELLOW"
 		menu_item 0 "Exit"             "$C_DIM"
 		printf '\n'
 		sep

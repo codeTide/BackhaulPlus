@@ -9,6 +9,12 @@ Welcome to the **`BackhaulPlus`** project! This project is an enhanced fork of B
 1. [Introduction](#introduction)
 2. [Features](#features)
 3. [Installation](#installation)
+   - [Recommended Linux install](#recommended-linux-install)
+   - [Offline install / update](#offline-install--update)
+   - [Manager usage](#manager-usage)
+   - [Mirror support](#mirror-support-repository--branch-override)
+   - [Legacy migration](#legacy-migration)
+   - [Manual binary usage](#manual-binary-usage)
 4. [Usage](#usage)
    - [Configuration Options](#configuration-options)
    - [Detailed Configuration](#detailed-configuration)
@@ -21,11 +27,10 @@ Welcome to the **`BackhaulPlus`** project! This project is an enhanced fork of B
       - [WSS Multiplexing Configuration](#wss-multiplexing-configuration)
 5. [Ports, SNI Gateways, and HTTP Gateways](#ports-sni-gateways-and-http-gateways)
 6. [Generating a Self-Signed TLS Certificate with OpenSSL](#generating-a-self-signed-tls-certificate-with-openssl)
-7. [Running BackhaulPlus as a service](#running-backhaulplus-as-a-service)
-8. [FAQ](#faq)
-9. [Benchmark](#benchmark)
-10. [License](#license)
-11. [Donation](#donation)
+7. [FAQ](#faq)
+8. [Benchmark](#benchmark)
+9. [License](#license)
+10. [Donation](#donation)
 
 ---
 
@@ -49,67 +54,97 @@ This project offers a robust **multi-server reverse tunneling solution** to over
 
 ## Installation
 
-1. **Download** the latest release from the [GitHub releases page](https://github.com/codeTide/BackhaulPlus/releases).
-2. **Extract** the archive (adjust the `filename` if needed):
+For production Linux servers (Ubuntu/Debian with systemd) the recommended way
+to install and manage BackhaulPlus is the interactive installer plus the `bhp`
+manager. It installs the daemon to standard system paths, builds from source,
+sets up a systemd service, and provides a terminal menu for updates, service
+control, backups, and recovery.
 
-   ```bash
-   tar -xzf backhaulplus_linux_amd64.tar.gz
-   ``` 
-3. **Run** the executable:  
-
-   ```bash
-   ./BackhaulPlus
-   ```
-4. You can also build from source if preferred:  
-
-   ```bash
-   git clone https://github.com/codeTide/BackhaulPlus.git
-   cd BackhaulPlus
-   go build
-   ./BackhaulPlus
-   ```
-
-## Linux install / manager
-
-For production Linux servers (Ubuntu/Debian with systemd) you can use the
-interactive installer and manager. This installs BackhaulPlus to standard
-system paths, sets up a systemd service, and provides a beautiful terminal
-menu (`bhp`) for updates, service control, backups, and recovery.
-
-Install:
+### Recommended Linux install
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/codeTide/BackhaulPlus/main/scripts/install.sh)
 ```
 
-Alternatively:
-
-```bash
-curl -Ls https://raw.githubusercontent.com/codeTide/BackhaulPlus/main/scripts/install.sh -o install.sh
-sudo bash install.sh
-```
-
-After installation, manage everything from the interactive menu:
+Then manage everything from the interactive menu:
 
 ```bash
 sudo bhp
 ```
 
-`bhp` provides a colored interactive menu with a consistent layout across every
-screen. The main menu and all submenus (Service, Config, Logs, Backup, Update,
-and Advanced / Recovery) share the same BackhaulPlus header: the ASCII project
-logo followed by a compact status block (screen name, version, service status,
-and config path). No screen looks bare compared to another.
+The installer:
 
-Menu choices are color-coded by action category so each option stands out as a
-unit (both the number and the label share the color): Update is green, Service
-blue, Config magenta, Logs cyan, Backup yellow, and destructive actions such as
-Stop and Uninstall are red, while Back/Exit are dimmed. It uses no emojis and
-requires no external UI dependencies (no `dialog`, `whiptail`, `figlet`, or
-`toilet`). The manager uses a richer ANSI palette with bright/bold variants when
-supported, so options within a menu stay visually distinct. Colors are enabled
-through `tput` when the terminal supports them and degrade gracefully to plain
-text otherwise (also honoring `NO_COLOR`).
+* installs the daemon to `/usr/local/bin/backhaulplus`
+* creates a compatibility symlink `/usr/local/bin/BackhaulPlus`
+* installs the manager `/usr/local/bin/bhp`
+* writes the config to `/etc/backhaulplus/config.toml`
+* creates and manages the `backhaulplus.service` systemd unit
+* keeps a source checkout at `/var/lib/backhaulplus/src`
+* stores backups under `/var/backups/backhaulplus`
+
+Re-running the installer is safe: it repairs/updates an existing installation.
+
+### Offline install / update
+
+You can install or update without the server ever contacting GitHub. This is
+useful on locked-down servers where outbound access to GitHub is blocked.
+
+On a machine with internet access:
+
+* Download the GitHub source archive for the desired commit/branch/release
+  (for example `BackhaulPlus-main.tar.gz` or `BackhaulPlus-main.zip`).
+* Copy it to the server.
+
+On the server (fresh install):
+
+```bash
+sudo BHP_SOURCE_ARCHIVE=/root/BackhaulPlus-main.tar.gz bash scripts/install.sh
+```
+
+or with a zip archive:
+
+```bash
+sudo BHP_SOURCE_ARCHIVE=/root/BackhaulPlus-main.zip bash scripts/install.sh
+```
+
+or if you already extracted the archive:
+
+```bash
+sudo BHP_SOURCE_DIR=/root/BackhaulPlus-main bash scripts/install.sh
+```
+
+For an existing install, run the manager with the same variable set and choose
+**Update**:
+
+```bash
+sudo BHP_SOURCE_ARCHIVE=/root/BackhaulPlus-main.tar.gz bhp
+```
+
+When `BHP_SOURCE_DIR` or `BHP_SOURCE_ARCHIVE` is set, **Update** uses offline
+mode automatically. Without the variable, **Update** asks whether to update
+online from the repository or offline from a local source/archive (and then
+prompts for the path).
+
+Notes:
+
+* Offline mode never contacts GitHub and never runs `git clone/fetch/pull`.
+* Offline mode still requires Go, because the daemon is built from source.
+* `.tar.gz`, `.tgz`, and `.zip` are supported when the matching extraction tool
+  (`tar` or `unzip`) is available.
+* Set only one of `BHP_SOURCE_DIR` / `BHP_SOURCE_ARCHIVE` at a time.
+* The installer/manager validates the source (presence of `go.mod` and
+  `scripts/bhp`, expected module path) before installing, backs up the previous
+  source checkout, and only swaps it in after a successful copy.
+
+### Manager usage
+
+```bash
+sudo bhp
+```
+
+`bhp` provides a color-coded interactive menu with a shared BackhaulPlus header
+across all screens. It uses no emojis or external UI dependencies and honors
+`NO_COLOR` and `BHP_ASCII=1`.
 
 If your terminal renders Unicode box characters poorly, force ASCII-safe
 separators:
@@ -120,79 +155,24 @@ sudo BHP_ASCII=1 bhp
 
 ### Mirror support (repository / branch override)
 
-Both the installer and `bhp` read the repository URL and branch from
-environment variables, which is useful when GitHub is blocked or slow and you
-want to use a mirror:
-
-```bash
-BHP_REPO_URL="https://your-mirror.example.com/codeTide/BackhaulPlus.git" \
-  bash install.sh
-```
-
-For manager updates, note that `sudo` may drop environment variables, so pass
-them explicitly. If you are already root:
-
-```bash
-BHP_REPO_URL="https://your-mirror.example.com/codeTide/BackhaulPlus.git" bhp
-```
-
-If you use `sudo`, set the variable on the `sudo` command itself, or preserve
-it:
+For online installs/updates, both the installer and `bhp` read the repository
+URL and branch from environment variables, which is useful when GitHub is
+blocked or slow and you want to use a mirror:
 
 ```bash
 sudo BHP_REPO_URL="https://your-mirror.example.com/codeTide/BackhaulPlus.git" bhp
 ```
 
-```bash
-sudo --preserve-env=BHP_REPO_URL,BHP_REPO_BRANCH bhp
-```
+The defaults are `https://github.com/codeTide/BackhaulPlus.git` and `main`. Note
+that `sudo` may drop environment variables, so set them on the `sudo` command
+itself (as above) or use `sudo --preserve-env=BHP_REPO_URL,BHP_REPO_BRANCH bhp`.
+The active repository and branch are shown under **Advanced -> Show install
+paths**. When updating an existing checkout, `bhp` and the installer also point
+the checkout's `origin` remote at the configured URL, so a mirror override
+applies to existing installs and not just fresh clones.
 
-The defaults are `https://github.com/codeTide/BackhaulPlus.git` and `main`. The
-active repository and branch are shown under **Advanced -> Show install paths**.
-When updating an existing checkout, `bhp` and the installer also point the
-checkout's `origin` remote at the configured URL, so a mirror override applies
-to existing installs and not just fresh clones.
-
-### Private repository access (GitHub token)
-
-If the repository becomes private, `git clone`, `git fetch`, and `git pull` need
-authentication. Both the installer and `bhp` support a GitHub token via
-environment variables:
-
-* `BHP_GITHUB_TOKEN`
-* `BHP_GIT_TOKEN` (alias)
-
-If either is set, it is used on the **first** git network attempt
-(clone/fetch/pull), so private repositories work without a failed unauthenticated
-try first. If no token is set, the first attempt runs with
-`GIT_TERMINAL_PROMPT=0` so git never opens its own credential prompt; if that
-attempt fails, `bhp` (and the installer, on a TTY) asks whether you want to enter
-a token, and the prompt does **not** echo your input. The token is used only for
-the single git operation that needs it via a temporary `GIT_ASKPASS` helper — it
-is never printed, never written to logs, and never stored in the `origin` remote
-URL or `.git/config`.
-
-```bash
-sudo BHP_GITHUB_TOKEN="ghp_xxx" bhp
-```
-
-Security notes:
-
-* Passing a token directly on the command line may be saved in your shell
-  history. Prefer exporting it temporarily in the current shell, or simply
-  entering it when prompted (no echo).
-* Use a fine-scoped token with **repository read access only**.
-* With `sudo`, environment variables may be dropped — set the variable on the
-  `sudo` command itself (as above) or use `--preserve-env=BHP_GITHUB_TOKEN`.
-
-The installer can use a token for the source `git clone`/`fetch`/`pull`. Note
-that downloading `install.sh` itself from a private repo cannot be done with an
-unauthenticated `curl`. Download it manually (or with a tokenized GitHub `curl`)
-and then run:
-
-```bash
-sudo BHP_GITHUB_TOKEN="..." bash install.sh
-```
+If repository authentication is required, the installer/manager will prompt for
+a token when needed (offline install/update avoids this entirely).
 
 ### Upgrading from the first manager version
 
@@ -261,11 +241,11 @@ detects it and offers to migrate:
   `/etc/backhaulplus/config.toml`.
 * It always backs up the legacy config first (to `/var/backups/backhaulplus/`).
 * It never overwrites an existing `/etc/backhaulplus/config.toml` without asking.
-* It will **not** delete the old `/root/BackhaulPlus` folder automatically — it
-  is left untouched so you can archive or remove it manually after verifying the
-  new service.
 * If an old systemd service (e.g. `backhaul.service` or `BackhaulPlus.service`)
-  is detected, the installer offers to disable it; its unit file is left in place.
+  is detected, the installer offers to disable it.
+* After the new service is confirmed running, the installer offers **optional**
+  cleanup of the old `/root/BackhaulPlus` folder and any disabled legacy service
+  units. Cleanup always backs up before deleting and **defaults to No**.
 
 #### Optional cleanup after migration
 
@@ -285,6 +265,21 @@ opt-in and every prompt **defaults to No**:
 Cleanup is only offered after the new service is running, nothing is ever
 deleted without an explicit `y` confirmation, a backup is always made before
 deletion, and config backups are never removed.
+
+### Manual binary usage
+
+For development or debugging, you can still build or run the binary manually:
+
+```bash
+git clone https://github.com/codeTide/BackhaulPlus.git
+cd BackhaulPlus
+go build -o backhaulplus .
+./backhaulplus -c config.toml
+```
+
+Production Linux deployments should use the installer and `bhp`. The installer
+creates and manages `backhaulplus.service`; use `sudo bhp` -> **Service** to
+start, stop, restart, enable, disable, or view its status.
 
 ## Usage
 
@@ -1126,43 +1121,6 @@ This will generate a certificate named `server.crt`, valid for 365 days.
 * `server.key`: Your private key.
 * `server.csr`: The certificate signing request (used to generate the certificate).
 * `server.crt`: Your self-signed TLS certificate.
-
-## Running BackhaulPlus as a service
-
-To create a service file for your BackhaulPlus project that ensures the service restarts automatically, you can use the following template for a systemd service file. Assuming your project runs a reverse tunnel and the main executable file is located in a certain path, here's a basic example:
-
-1. Create the service file `/etc/systemd/system/BackhaulPlus.service`:
-
-```ini
-[Unit]
-Description=BackhaulPlus Reverse Tunnel Service
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/root/BackhaulPlus/BackhaulPlus -c /root/BackhaulPlus/config.toml
-Restart=always
-RestartSec=3
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-```
-2. After creating the service file, enable and start the service:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable BackhaulPlus.service
-sudo systemctl start BackhaulPlus.service
-```
-3. To verify if the service is running:
-```bash
-sudo systemctl status BackhaulPlus.service
-```
-4. View the most recent log entries for the BackhaulPlus.service unit:
-```bash
-journalctl -u BackhaulPlus.service -e -f
-```
 
 ## FAQ
 
