@@ -95,14 +95,19 @@ After installation, manage everything from the interactive menu:
 sudo bhp
 ```
 
-`bhp` provides a colored interactive menu with an ASCII project logo, colored
-section separators, a clear status block, and color-coded menu choices (option
-numbers in cyan, normal actions bold, advanced/recovery actions in yellow,
-destructive actions such as Uninstall in red, and Back/Exit dimmed). It uses no
-emojis and requires no external UI dependencies (no `dialog`, `whiptail`,
-`figlet`, or `toilet`). Colors are enabled through `tput` when the terminal
-supports them and degrade gracefully to plain text otherwise (also honoring
-`NO_COLOR`).
+`bhp` provides a colored interactive menu with a consistent layout across every
+screen. The main menu and all submenus (Service, Config, Logs, Backup, Update,
+and Advanced / Recovery) share the same BackhaulPlus header: the ASCII project
+logo followed by a compact status block (screen name, version, service status,
+and config path). No screen looks bare compared to another.
+
+Menu choices are color-coded by action category so each option stands out as a
+unit (both the number and the label share the color): Update is green, Service
+blue, Config magenta, Logs cyan, Backup yellow, and destructive actions such as
+Stop and Uninstall are red, while Back/Exit are dimmed. It uses no emojis and
+requires no external UI dependencies (no `dialog`, `whiptail`, `figlet`, or
+`toilet`). Colors are enabled through `tput` when the terminal supports them and
+degrade gracefully to plain text otherwise (also honoring `NO_COLOR`).
 
 If your terminal renders Unicode box characters poorly, force ASCII-safe
 separators:
