@@ -63,9 +63,18 @@ if supports_color; then
 	C_MAGENTA="$(tput setaf 5)"
 	C_CYAN="$(tput setaf 6)"
 	C_BCYAN="$(tput setaf 14 2>/dev/null || tput setaf 6)"
+	C_WHITE="$(tput setaf 7)"
+	C_BWHITE="$(tput bold; tput setaf 7)"
+	C_BRED="$(tput bold; tput setaf 1)"
+	C_BGREEN="$(tput bold; tput setaf 2)"
+	C_BYELLOW="$(tput bold; tput setaf 3)"
+	C_BBLUE="$(tput bold; tput setaf 4)"
+	C_BMAGENTA="$(tput bold; tput setaf 5)"
 else
 	C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""; C_GREEN=""; C_YELLOW=""
 	C_BLUE=""; C_MAGENTA=""; C_CYAN=""; C_BCYAN=""
+	C_WHITE=""; C_BWHITE=""; C_BRED=""; C_BGREEN=""; C_BYELLOW=""
+	C_BBLUE=""; C_BMAGENTA=""
 fi
 
 # --------------------------------------------------------------------------- #
@@ -808,9 +817,9 @@ menu_service() {
 		clear
 		print_screen_header "Service"
 		printf '\n'
-		menu_item 1 "Start"           "$C_GREEN"
-		menu_item 2 "Stop"            "$C_RED"
-		menu_item 3 "Restart"         "$C_BLUE"
+		menu_item 1 "Start"           "$C_BGREEN"
+		menu_item 2 "Stop"            "$C_BRED"
+		menu_item 3 "Restart"         "$C_BBLUE"
 		menu_item 4 "Status"          "$C_CYAN"
 		menu_item 5 "Enable on boot"  "$C_GREEN"
 		menu_item 6 "Disable on boot" "$C_YELLOW"
@@ -863,10 +872,10 @@ menu_config() {
 		clear
 		print_screen_header "Config"
 		printf '\n'
-		menu_item 1 "Edit config"      "$C_MAGENTA"
+		menu_item 1 "Edit config"      "$C_BMAGENTA"
 		menu_item 2 "Show config"      "$C_CYAN"
 		menu_item 3 "Show config path" "$C_BLUE"
-		menu_item 4 "Backup config"    "$C_YELLOW"
+		menu_item 4 "Backup config"    "$C_BYELLOW"
 		menu_item 0 "Back"             "$C_DIM"
 		printf '\n'
 		sep
@@ -890,9 +899,9 @@ menu_logs() {
 		clear
 		print_screen_header "Logs"
 		printf '\n'
-		menu_item 1 "Live logs"      "$C_GREEN"
+		menu_item 1 "Live logs"      "$C_BGREEN"
 		menu_item 2 "Last 100 lines" "$C_CYAN"
-		menu_item 3 "Last boot logs" "$C_BLUE"
+		menu_item 3 "Last boot logs" "$C_BBLUE"
 		menu_item 0 "Back"           "$C_DIM"
 		printf '\n'
 		sep
@@ -915,9 +924,9 @@ menu_backup() {
 		clear
 		print_screen_header "Backup"
 		printf '\n'
-		menu_item 1 "Backup config" "$C_YELLOW"
-		menu_item 2 "Backup binary" "$C_BLUE"
-		menu_item 3 "Backup all"    "$C_GREEN"
+		menu_item 1 "Backup config" "$C_BYELLOW"
+		menu_item 2 "Backup binary" "$C_BBLUE"
+		menu_item 3 "Backup all"    "$C_BGREEN"
 		menu_item 0 "Back"          "$C_DIM"
 		printf '\n'
 		sep
@@ -1067,11 +1076,11 @@ menu_advanced() {
 		clear
 		print_screen_header "Advanced / Recovery"
 		printf '\n'
-		menu_item 1 "Rollback binary"        "$C_YELLOW"
-		menu_item 2 "Restore config backup"  "$C_MAGENTA"
-		menu_item 3 "Reinstall service file" "$C_BLUE"
+		menu_item 1 "Rollback binary"        "$C_BYELLOW"
+		menu_item 2 "Restore config backup"  "$C_BMAGENTA"
+		menu_item 3 "Reinstall service file" "$C_BBLUE"
 		menu_item 4 "Show install paths"     "$C_CYAN"
-		menu_item 5 "Uninstall"              "$C_RED"
+		menu_item 5 "Uninstall"              "$C_BRED"
 		menu_item 0 "Back"                   "$C_DIM"
 		printf '\n'
 		sep
@@ -1119,11 +1128,11 @@ main_menu() {
 		print_screen_header "Main Menu"
 		printf '\n'
 		menu_item 1 "Install / Repair" "$C_BCYAN"
-		menu_item 2 "Update"           "$C_GREEN"
-		menu_item 3 "Service"          "$C_BLUE"
-		menu_item 4 "Config"           "$C_MAGENTA"
+		menu_item 2 "Update"           "$C_BGREEN"
+		menu_item 3 "Service"          "$C_BBLUE"
+		menu_item 4 "Config"           "$C_BMAGENTA"
 		menu_item 5 "Logs"             "$C_CYAN"
-		menu_item 6 "Backup"           "$C_YELLOW"
+		menu_item 6 "Backup"           "$C_BYELLOW"
 		menu_item 7 "Advanced"         "$C_YELLOW"
 		menu_item 0 "Exit"             "$C_DIM"
 		printf '\n'

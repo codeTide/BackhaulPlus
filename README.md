@@ -106,8 +106,10 @@ unit (both the number and the label share the color): Update is green, Service
 blue, Config magenta, Logs cyan, Backup yellow, and destructive actions such as
 Stop and Uninstall are red, while Back/Exit are dimmed. It uses no emojis and
 requires no external UI dependencies (no `dialog`, `whiptail`, `figlet`, or
-`toilet`). Colors are enabled through `tput` when the terminal supports them and
-degrade gracefully to plain text otherwise (also honoring `NO_COLOR`).
+`toilet`). The manager uses a richer ANSI palette with bright/bold variants when
+supported, so options within a menu stay visually distinct. Colors are enabled
+through `tput` when the terminal supports them and degrade gracefully to plain
+text otherwise (also honoring `NO_COLOR`).
 
 If your terminal renders Unicode box characters poorly, force ASCII-safe
 separators:
