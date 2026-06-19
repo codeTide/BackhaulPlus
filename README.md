@@ -157,6 +157,17 @@ Notes:
   `scripts/bhp`, expected module path) before installing, backs up the previous
   source checkout, and only swaps it in after a successful copy.
 
+After a successful offline install/update, the copied archive or extracted source
+directory is no longer required because BackhaulPlus keeps its installed source
+under `/var/lib/backhaulplus/src`. The installer/manager may offer to remove the
+temporary offline source files, defaulting to **No**.
+
+If you installed from an offline source and later GitHub access becomes
+available, choose **Update -> Online from repository**. `bhp` detects a valid
+non-git offline source tree, backs it up, replaces it with a git checkout, and
+then continues with the normal online update flow. Re-running the online
+`scripts/install.sh` after an offline install performs the same conversion.
+
 ### Manager usage
 
 ```bash
