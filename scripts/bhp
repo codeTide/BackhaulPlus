@@ -133,13 +133,21 @@ status_color() {
 }
 
 # menu_item: render a single colored menu choice.
-#   $1 = number/key, $2 = label text, $3 = optional label color (defaults bold).
-# The number is always cyan; the label uses the requested color so destructive
-# or advanced options can stand out. No emojis; degrades to plain text when
-# colors are disabled (all C_* expand to empty).
+#   $1 = number/key, $2 = label text, $3 = optional label color (defaults bold),
+#   $4 = optional number color (defaults to the label color so the whole line
+#   reads as one category).
+# Coloring both the number and the label lets each action category stand out as
+# a unit (e.g. a fully green Update, a fully magenta Config). No emojis;
+# degrades to plain text when colors are disabled (all C_* expand to empty).
 menu_item() {
-	local num="$1" text="$2" color="${3:-$C_BOLD}"
-	printf '  %s%s.%s %s%s%s\n' "$C_CYAN" "$num" "$C_RESET" "$color" "$text" "$C_RESET"
+	local num="$1"
+	local text="$2"
+	local text_color="${3:-$C_BOLD}"
+	local num_color="${4:-$text_color}"
+
+	printf '  %s%s.%s %s%s%s\n' \
+		"$num_color" "$num" "$C_RESET" \
+		"$text_color" "$text" "$C_RESET"
 }
 
 info()  { printf '%s==>%s %s\n' "${C_BLUE}${C_BOLD}" "${C_RESET}" "$*"; }
@@ -566,7 +574,7 @@ do_update() {
 	# 3. Determine local vs remote state and show a preview.
 	local status; status="$(git_update_status)"
 	clear
-	print_logo
+	print_screen_header "Update"
 	printf '\n'
 	print_update_preview "$status"
 	printf '\n'
@@ -798,13 +806,13 @@ svc_action() {
 menu_service() {
 	while true; do
 		clear
-		print_panel "Service"
+		print_screen_header "Service"
 		printf '\n'
 		menu_item 1 "Start"           "$C_GREEN"
-		menu_item 2 "Stop"            "$C_YELLOW"
-		menu_item 3 "Restart"         "$C_BOLD"
-		menu_item 4 "Status"          "$C_BOLD"
-		menu_item 5 "Enable on boot"  "$C_BOLD"
+		menu_item 2 "Stop"            "$C_RED"
+		menu_item 3 "Restart"         "$C_BLUE"
+		menu_item 4 "Status"          "$C_CYAN"
+		menu_item 5 "Enable on boot"  "$C_GREEN"
 		menu_item 6 "Disable on boot" "$C_YELLOW"
 		menu_item 0 "Back"            "$C_DIM"
 		printf '\n'
@@ -853,12 +861,12 @@ config_show() {
 menu_config() {
 	while true; do
 		clear
-		print_panel "Config"
+		print_screen_header "Config"
 		printf '\n'
-		menu_item 1 "Edit config"      "$C_BOLD"
-		menu_item 2 "Show config"      "$C_BOLD"
-		menu_item 3 "Show config path" "$C_BOLD"
-		menu_item 4 "Backup config"    "$C_BOLD"
+		menu_item 1 "Edit config"      "$C_MAGENTA"
+		menu_item 2 "Show config"      "$C_CYAN"
+		menu_item 3 "Show config path" "$C_BLUE"
+		menu_item 4 "Backup config"    "$C_YELLOW"
 		menu_item 0 "Back"             "$C_DIM"
 		printf '\n'
 		sep
@@ -880,11 +888,11 @@ menu_config() {
 menu_logs() {
 	while true; do
 		clear
-		print_panel "Logs"
+		print_screen_header "Logs"
 		printf '\n'
-		menu_item 1 "Live logs"      "$C_BOLD"
-		menu_item 2 "Last 100 lines" "$C_BOLD"
-		menu_item 3 "Last boot logs" "$C_BOLD"
+		menu_item 1 "Live logs"      "$C_GREEN"
+		menu_item 2 "Last 100 lines" "$C_CYAN"
+		menu_item 3 "Last boot logs" "$C_BLUE"
 		menu_item 0 "Back"           "$C_DIM"
 		printf '\n'
 		sep
@@ -905,11 +913,11 @@ menu_logs() {
 menu_backup() {
 	while true; do
 		clear
-		print_panel "Backup"
+		print_screen_header "Backup"
 		printf '\n'
-		menu_item 1 "Backup config" "$C_BOLD"
-		menu_item 2 "Backup binary" "$C_BOLD"
-		menu_item 3 "Backup all"    "$C_BOLD"
+		menu_item 1 "Backup config" "$C_YELLOW"
+		menu_item 2 "Backup binary" "$C_BLUE"
+		menu_item 3 "Backup all"    "$C_GREEN"
 		menu_item 0 "Back"          "$C_DIM"
 		printf '\n'
 		sep
@@ -1057,14 +1065,14 @@ adv_uninstall() {
 menu_advanced() {
 	while true; do
 		clear
-		print_panel "Advanced / Recovery"
+		print_screen_header "Advanced / Recovery"
 		printf '\n'
-		menu_item 1 "Rollback binary"       "$C_YELLOW"
-		menu_item 2 "Restore config backup" "$C_YELLOW"
-		menu_item 3 "Reinstall service file" "$C_BOLD"
-		menu_item 4 "Show install paths"    "$C_BOLD"
-		menu_item 5 "Uninstall"             "$C_RED"
-		menu_item 0 "Back"                  "$C_DIM"
+		menu_item 1 "Rollback binary"        "$C_YELLOW"
+		menu_item 2 "Restore config backup"  "$C_MAGENTA"
+		menu_item 3 "Reinstall service file" "$C_BLUE"
+		menu_item 4 "Show install paths"     "$C_CYAN"
+		menu_item 5 "Uninstall"              "$C_RED"
+		menu_item 0 "Back"                   "$C_DIM"
 		printf '\n'
 		sep
 		read -r -p "$(printf ' %sEnter your choice [0-5]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
@@ -1083,42 +1091,39 @@ menu_advanced() {
 # --------------------------------------------------------------------------- #
 # Header / main menu
 # --------------------------------------------------------------------------- #
-# print_panel: compact submenu header (colored separator + title), no logo.
-print_panel() {
+# print_screen_header: unified header used by every major screen. Shows the
+# ASCII logo, the current screen name, version, service status, and config path
+# so submenus feel like the same app as the main menu instead of bare panels.
+# Kept compact (no large blocks below the logo) so it still fits a normal SSH
+# terminal at UI_WIDTH columns.
+print_screen_header() {
 	local title="$1"
-	sep
-	printf ' %s%s%s%s\n' "$C_BOLD" "$C_CYAN" "$title" "$C_RESET"
-	sep
-}
+	local status ver
 
-# print_main_header: ASCII logo + colored status block for the main menu.
-print_main_header() {
-	local status; status="$(service_status)"
-	local ver; ver="$(binary_version)"
+	status="$(service_status)"
+	ver="$(binary_version)"
 
 	print_logo
 	printf '\n\n'
 	sep
-	label_value "Version" "$ver"          "$C_CYAN"
-	label_value "Service" "$SERVICE_NAME" "$C_RESET"
-	label_value "Status"  "$status"       "$(status_color "$status")"
-	label_value "Config"  "$CONFIG_FILE"  "$C_DIM"
-	label_value "Binary"  "$BIN_DAEMON"   "$C_DIM"
-	label_value "Source"  "$SRC_DIR"      "$C_DIM"
+	label_value "Screen"  "$title"       "$C_BCYAN"
+	label_value "Version" "$ver"         "$C_CYAN"
+	label_value "Status"  "$status"      "$(status_color "$status")"
+	label_value "Config"  "$CONFIG_FILE" "$C_DIM"
 	sep
 }
 
 main_menu() {
 	while true; do
 		clear
-		print_main_header
+		print_screen_header "Main Menu"
 		printf '\n'
-		menu_item 1 "Install / Repair" "$C_BOLD"
+		menu_item 1 "Install / Repair" "$C_BCYAN"
 		menu_item 2 "Update"           "$C_GREEN"
-		menu_item 3 "Service"          "$C_BOLD"
-		menu_item 4 "Config"           "$C_BOLD"
-		menu_item 5 "Logs"             "$C_BOLD"
-		menu_item 6 "Backup"           "$C_BOLD"
+		menu_item 3 "Service"          "$C_BLUE"
+		menu_item 4 "Config"           "$C_MAGENTA"
+		menu_item 5 "Logs"             "$C_CYAN"
+		menu_item 6 "Backup"           "$C_YELLOW"
 		menu_item 7 "Advanced"         "$C_YELLOW"
 		menu_item 0 "Exit"             "$C_DIM"
 		printf '\n'
