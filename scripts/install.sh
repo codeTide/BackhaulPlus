@@ -81,6 +81,118 @@ ask_yes_no() {
 
 timestamp() { date +%Y%m%d-%H%M%S; }
 
+# --------------------------------------------------------------------------- #
+# Git authentication helpers (private repository support)
+# --------------------------------------------------------------------------- #
+# Allow git network operations (clone/fetch/pull) to authenticate against a
+# private GitHub repository using a token, without printing the token, writing
+# it to logs, or persisting it in the remote URL / .git/config.
+#
+# Token sources, in order:
+#   1. BHP_GITHUB_TOKEN environment variable
+#   2. BHP_GIT_TOKEN environment variable (alias)
+#   3. Interactive (no-echo) prompt, only when a git operation fails on a TTY.
+#
+# Note: fetching install.sh itself from a private repo still needs an
+# authenticated download (e.g. a tokenized curl) before running this script.
+
+# get_git_token_from_env: print the token from the environment on stdout, or
+# nothing. Does not prompt.
+get_git_token_from_env() {
+	if [[ -n "${BHP_GITHUB_TOKEN:-}" ]]; then
+		printf '%s' "$BHP_GITHUB_TOKEN"
+		return
+	fi
+	if [[ -n "${BHP_GIT_TOKEN:-}" ]]; then
+		printf '%s' "$BHP_GIT_TOKEN"
+		return
+	fi
+	printf ''
+}
+
+# get_git_token_interactive: prompt the user for a token without echoing input.
+# Prints the token on stdout (or nothing if declined / not a TTY).
+get_git_token_interactive() {
+	local token=""
+
+	if [[ -t 0 ]]; then
+		if ask_yes_no "Git authentication may be required. Enter a GitHub token now?" "n"; then
+			read -r -s -p "GitHub token: " token
+			printf '\n' >&2
+			printf '%s' "$token"
+		fi
+	fi
+}
+
+# run_git_with_token: run a git command authenticating with the given token via
+# a temporary GIT_ASKPASS helper. The token is passed only through the
+# environment for the single invocation; the askpass script is always removed
+# afterwards, even on failure.
+run_git_with_token() {
+	local token="$1"
+	shift
+
+	local askpass rc
+	askpass="$(mktemp)"
+	chmod 700 "$askpass"
+	cat > "$askpass" <<'EOF'
+#!/usr/bin/env sh
+case "$1" in
+  *Username*) echo "x-access-token" ;;
+  *Password*) echo "$BHP_EFFECTIVE_GIT_TOKEN" ;;
+  *) echo "" ;;
+esac
+EOF
+
+	if BHP_EFFECTIVE_GIT_TOKEN="$token" \
+	   GIT_ASKPASS="$askpass" \
+	   GIT_TERMINAL_PROMPT=0 \
+	   "$@"; then
+		rc=0
+	else
+		rc=$?
+	fi
+
+	rm -f "$askpass"
+	return "$rc"
+}
+
+# git_run: run a git network command. Use ONLY for operations that may hit the
+# network (clone/fetch/pull); never for local-only commands.
+#
+# Order of attempts:
+#   1. If a token is set in the environment, use it on the first attempt.
+#   2. Otherwise run once unauthenticated with GIT_TERMINAL_PROMPT=0 so git
+#      never opens its own credential prompt.
+#   3. If that fails, offer our controlled no-echo token prompt and retry.
+git_run() {
+	local token
+	token="$(get_git_token_from_env)"
+
+	# If a token was provided through the environment, use it on the first try.
+	if [[ -n "$token" ]]; then
+		run_git_with_token "$token" "$@"
+		return $?
+	fi
+
+	# No token provided. Prevent git from opening its own credential prompt.
+	if GIT_TERMINAL_PROMPT=0 "$@"; then
+		return 0
+	fi
+
+	local rc=$?
+	warn "Git command failed. Authentication or network access may be required."
+
+	token="$(get_git_token_interactive)"
+	if [[ -n "$token" ]]; then
+		info "Retrying git command with token authentication..."
+		run_git_with_token "$token" "$@"
+		return $?
+	fi
+
+	return "$rc"
+}
+
 trap 'err "Installation aborted (line $LINENO)."' ERR
 
 # --------------------------------------------------------------------------- #
@@ -190,9 +302,17 @@ create_dirs() {
 LEGACY_DIR="/root/BackhaulPlus"
 LEGACY_CONFIG="${LEGACY_DIR}/config.toml"
 
+# Track old services detected/disabled during migration so we can optionally
+# offer to remove their unit files later, only after the new service is healthy.
+LEGACY_SERVICES_FOUND=()
+LEGACY_SERVICES_DISABLED=()
+# Set to 1 when a legacy install was detected and migration ran.
+LEGACY_MIGRATED=0
+
 migrate_legacy() {
 	# Migrate a legacy manual install at /root/BackhaulPlus if present.
 	if [[ -d "$LEGACY_DIR" ]]; then
+		LEGACY_MIGRATED=1
 		info "Existing legacy BackhaulPlus install found at ${LEGACY_DIR}."
 		if [[ -f "$LEGACY_CONFIG" ]]; then
 			if ask_yes_no "Migrate config to ${CONFIG_FILE}?" "y"; then
@@ -243,13 +363,90 @@ migrate_legacy_services() {
 		fi
 
 		if [[ "$is_legacy" -eq 1 ]]; then
+			LEGACY_SERVICES_FOUND+=("$svc")
 			warn "Found old service: ${svc}"
 			if ask_yes_no "Disable old service ${svc}?" "y"; then
 				systemctl disable --now "$svc" >/dev/null 2>&1 || warn "Could not disable ${svc} (it may already be inactive)."
+				LEGACY_SERVICES_DISABLED+=("$svc")
 				ok "Disabled ${svc}. Its unit file was left in place."
 			fi
 		fi
 	done
+}
+
+# --------------------------------------------------------------------------- #
+# Optional legacy cleanup (only after the new service is confirmed running)
+# --------------------------------------------------------------------------- #
+# All cleanup here is opt-in, defaults to No, always backs up before deleting,
+# and never removes config backups.
+
+backup_legacy_folder() {
+	install -d -m 0750 "$BACKUP_DIR"
+	local dest="${BACKUP_DIR}/legacy-root-BackhaulPlus-$(timestamp).tar.gz"
+	if tar -czf "$dest" -C /root BackhaulPlus; then
+		ok "Legacy folder backed up to ${dest}"
+		return 0
+	fi
+	err "Failed to back up ${LEGACY_DIR}; not removing it."
+	return 1
+}
+
+cleanup_legacy_folder() {
+	if [[ -d "$LEGACY_DIR" ]]; then
+		warn "Legacy folder ${LEGACY_DIR} is no longer used by the new service."
+		if ask_yes_no "Back up and remove ${LEGACY_DIR} now?" "n"; then
+			if backup_legacy_folder; then
+				rm -rf "$LEGACY_DIR"
+				ok "Removed ${LEGACY_DIR}"
+			fi
+		else
+			info "Left ${LEGACY_DIR} in place."
+		fi
+	fi
+}
+
+cleanup_legacy_service_units() {
+	# Offer to remove the unit files of old services we disabled. Each removal is
+	# confirmed individually, backs up the unit first, and never touches the new
+	# service unit.
+	local svc
+	for svc in "${LEGACY_SERVICES_DISABLED[@]}"; do
+		[[ "$svc" == "$SERVICE_NAME" ]] && continue
+		local unit_path="/etc/systemd/system/${svc}"
+		[[ -f "$unit_path" ]] || continue
+		warn "Old service unit ${unit_path} is no longer used."
+		if ask_yes_no "Back up and remove ${unit_path} now?" "n"; then
+			install -d -m 0750 "$BACKUP_DIR"
+			local dest="${BACKUP_DIR}/legacy-unit-${svc}-$(timestamp)"
+			if cp -a "$unit_path" "$dest"; then
+				ok "Backed up ${unit_path} to ${dest}"
+				rm -f "$unit_path"
+				systemctl daemon-reload
+				ok "Removed ${unit_path}"
+			else
+				err "Failed to back up ${unit_path}; not removing it."
+			fi
+		else
+			info "Left ${unit_path} in place."
+		fi
+	done
+}
+
+# offer_legacy_cleanup: entry point called from main() after the new service
+# has been confirmed running. Defaults are always No.
+offer_legacy_cleanup() {
+	if [[ "$LEGACY_MIGRATED" -ne 1 && ${#LEGACY_SERVICES_DISABLED[@]} -eq 0 ]]; then
+		return
+	fi
+	if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+		info "New service is not active yet; skipping optional legacy cleanup."
+		info "Re-run the installer after the service is running to clean up legacy files."
+		return
+	fi
+	printf '\n'
+	info "The new service is running. Optional cleanup of legacy files is available."
+	cleanup_legacy_folder
+	cleanup_legacy_service_units
 }
 
 # --------------------------------------------------------------------------- #
@@ -273,15 +470,15 @@ update_source() {
 		info "Updating source checkout in ${SRC_DIR}..."
 		ensure_origin_url
 		# Explicit refspec so origin/<branch> is reliably refreshed.
-		git -C "$SRC_DIR" fetch --prune origin \
+		git_run git -C "$SRC_DIR" fetch --prune origin \
 			"+refs/heads/${REPO_BRANCH}:refs/remotes/origin/${REPO_BRANCH}"
 		git -C "$SRC_DIR" checkout "$REPO_BRANCH"
-		git -C "$SRC_DIR" pull --ff-only origin "$REPO_BRANCH"
+		git_run git -C "$SRC_DIR" pull --ff-only origin "$REPO_BRANCH"
 	else
 		info "Cloning ${REPO_URL} into ${SRC_DIR}..."
 		# Clone into the (possibly empty) source dir.
 		rmdir "$SRC_DIR" 2>/dev/null || true
-		git clone --branch "$REPO_BRANCH" "$REPO_URL" "$SRC_DIR"
+		git_run git clone --branch "$REPO_BRANCH" "$REPO_URL" "$SRC_DIR"
 	fi
 	ok "Source checkout ready."
 }
@@ -423,6 +620,9 @@ main() {
 	install_manager
 	install_service_unit
 	finalize_config_and_service
+
+	# Optional, opt-in cleanup of legacy files, only after the new service is up.
+	offer_legacy_cleanup
 
 	printf '\n'
 	ok "Done. Manage BackhaulPlus with: ${C_BOLD}sudo bhp${C_RESET}"

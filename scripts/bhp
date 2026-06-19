@@ -36,6 +36,10 @@ BACKUP_DIR="/var/backups/backhaulplus"
 SERVICE_NAME="backhaulplus.service"
 SERVICE_UNIT="/etc/systemd/system/${SERVICE_NAME}"
 
+# Set to "yes" by do_update when the manager script itself was refreshed. Used
+# by maybe_restart_manager to offer a self-restart so the new UI takes effect.
+manager_updated="no"
+
 # --------------------------------------------------------------------------- #
 # Colors
 # --------------------------------------------------------------------------- #
@@ -128,6 +132,16 @@ status_color() {
 	esac
 }
 
+# menu_item: render a single colored menu choice.
+#   $1 = number/key, $2 = label text, $3 = optional label color (defaults bold).
+# The number is always cyan; the label uses the requested color so destructive
+# or advanced options can stand out. No emojis; degrades to plain text when
+# colors are disabled (all C_* expand to empty).
+menu_item() {
+	local num="$1" text="$2" color="${3:-$C_BOLD}"
+	printf '  %s%s.%s %s%s%s\n' "$C_CYAN" "$num" "$C_RESET" "$color" "$text" "$C_RESET"
+}
+
 info()  { printf '%s==>%s %s\n' "${C_BLUE}${C_BOLD}" "${C_RESET}" "$*"; }
 ok()    { printf '%s[ ok ]%s %s\n' "${C_GREEN}" "${C_RESET}" "$*"; }
 warn()  { printf '%s[warn]%s %s\n' "${C_YELLOW}" "${C_RESET}" "$*"; }
@@ -160,6 +174,117 @@ require_root() {
 		return 1
 	fi
 	return 0
+}
+
+# --------------------------------------------------------------------------- #
+# Git authentication helpers (private repository support)
+# --------------------------------------------------------------------------- #
+# These helpers allow git network operations (clone/fetch/pull) to authenticate
+# against a private GitHub repository using a token, without ever printing the
+# token, writing it to logs, or persisting it in the remote URL / .git/config.
+#
+# Token sources, in order:
+#   1. BHP_GITHUB_TOKEN environment variable
+#   2. BHP_GIT_TOKEN environment variable (alias)
+#   3. Interactive (no-echo) prompt, only when a git operation fails and stdin
+#      is a TTY.
+
+# get_git_token_from_env: print the token from the environment on stdout, or
+# nothing. Does not prompt.
+get_git_token_from_env() {
+	if [[ -n "${BHP_GITHUB_TOKEN:-}" ]]; then
+		printf '%s' "$BHP_GITHUB_TOKEN"
+		return
+	fi
+	if [[ -n "${BHP_GIT_TOKEN:-}" ]]; then
+		printf '%s' "$BHP_GIT_TOKEN"
+		return
+	fi
+	printf ''
+}
+
+# get_git_token_interactive: prompt the user for a token without echoing input.
+# Prints the token on stdout (or nothing if declined / not a TTY).
+get_git_token_interactive() {
+	local token=""
+
+	if [[ -t 0 ]]; then
+		if ask_yes_no "Git authentication may be required. Enter a GitHub token now?" "n"; then
+			read -r -s -p "GitHub token: " token
+			printf '\n' >&2
+			printf '%s' "$token"
+		fi
+	fi
+}
+
+# run_git_with_token: run a git command authenticating with the given token via
+# a temporary GIT_ASKPASS helper. The token is passed only through the
+# environment for the single invocation and never written to disk in cleartext
+# git config. The askpass script is always removed afterwards, even on failure.
+run_git_with_token() {
+	local token="$1"
+	shift
+
+	local askpass rc
+	askpass="$(mktemp)"
+	chmod 700 "$askpass"
+	cat > "$askpass" <<'EOF'
+#!/usr/bin/env sh
+case "$1" in
+  *Username*) echo "x-access-token" ;;
+  *Password*) echo "$BHP_EFFECTIVE_GIT_TOKEN" ;;
+  *) echo "" ;;
+esac
+EOF
+
+	if BHP_EFFECTIVE_GIT_TOKEN="$token" \
+	   GIT_ASKPASS="$askpass" \
+	   GIT_TERMINAL_PROMPT=0 \
+	   "$@"; then
+		rc=0
+	else
+		rc=$?
+	fi
+
+	rm -f "$askpass"
+	return "$rc"
+}
+
+# git_run: run a git network command. Use ONLY for operations that may hit the
+# network (clone/fetch/pull); never for local-only commands (rev-parse,
+# merge-base, checkout, etc.).
+#
+# Order of attempts:
+#   1. If a token is set in the environment, use it on the first attempt.
+#   2. Otherwise run once unauthenticated with GIT_TERMINAL_PROMPT=0 so git
+#      never opens its own credential prompt.
+#   3. If that fails, offer our controlled no-echo token prompt and retry.
+git_run() {
+	local token
+	token="$(get_git_token_from_env)"
+
+	# If a token was provided through the environment, use it on the first try.
+	if [[ -n "$token" ]]; then
+		run_git_with_token "$token" "$@"
+		return $?
+	fi
+
+	# No token provided. Prevent git from opening its own credential prompt.
+	if GIT_TERMINAL_PROMPT=0 "$@"; then
+		return 0
+	fi
+
+	local rc=$?
+	warn "Git command failed. Authentication or network access may be required."
+
+	token="$(get_git_token_interactive)"
+	if [[ -n "$token" ]]; then
+		info "Retrying git command with token authentication..."
+		run_git_with_token "$token" "$@"
+		return $?
+	fi
+
+	return "$rc"
 }
 
 # --------------------------------------------------------------------------- #
@@ -348,7 +473,7 @@ ensure_source() {
 	info "Cloning source..."
 	install -d -m 0755 "$STATE_DIR"
 	rmdir "$SRC_DIR" 2>/dev/null || true
-	git clone --branch "$REPO_BRANCH" "$REPO_URL" "$SRC_DIR"
+	git_run git clone --branch "$REPO_BRANCH" "$REPO_URL" "$SRC_DIR"
 }
 
 # fetch_source: fetch the configured remote branch (no working-tree changes).
@@ -357,7 +482,7 @@ ensure_source() {
 fetch_source() {
 	ensure_origin_url
 	info "Fetching origin/${REPO_BRANCH}..."
-	git -C "$SRC_DIR" fetch --prune origin \
+	git_run git -C "$SRC_DIR" fetch --prune origin \
 		"+refs/heads/${REPO_BRANCH}:refs/remotes/origin/${REPO_BRANCH}"
 }
 
@@ -366,7 +491,7 @@ fetch_source() {
 apply_update() {
 	ensure_origin_url
 	git -C "$SRC_DIR" checkout "$REPO_BRANCH" || return 1
-	git -C "$SRC_DIR" pull --ff-only origin "$REPO_BRANCH" || return 1
+	git_run git -C "$SRC_DIR" pull --ff-only origin "$REPO_BRANCH" || return 1
 }
 
 # install_manager_atomic: install the updated manager script from the source
@@ -390,7 +515,7 @@ update_source() {
 	if [[ -d "${SRC_DIR}/.git" ]]; then
 		info "Updating source checkout..."
 		ensure_origin_url
-		git -C "$SRC_DIR" fetch --prune origin \
+		git_run git -C "$SRC_DIR" fetch --prune origin \
 			"+refs/heads/${REPO_BRANCH}:refs/remotes/origin/${REPO_BRANCH}"
 		apply_update
 	else
@@ -489,7 +614,7 @@ do_update() {
 	# Update the manager script itself from the freshly prepared checkout so the
 	# improved UI takes effect. This is independent of the daemon build and does
 	# not touch the running service or config.
-	local manager_updated="no"
+	manager_updated="no"
 	if install_manager_atomic; then
 		manager_updated="yes"
 	fi
@@ -555,9 +680,28 @@ do_update() {
 		info "Installed version: $(binary_version)"
 	fi
 	if [[ "$manager_updated" == "yes" ]]; then
-		info "Restart bhp to use the updated manager UI if this session was started from an older version."
+		info "The manager script was updated."
 	fi
 	pause
+	# Offer a self-restart only now that the daemon update / rollback flow has
+	# fully completed. This is the last thing do_update does before returning to
+	# the menu, so it never interrupts a build, install, or rollback.
+	maybe_restart_manager
+}
+
+# maybe_restart_manager: if the manager script was refreshed during this update,
+# offer to re-exec the freshly installed manager so the new UI takes effect in
+# the current session. Must only be called after all update work has finished.
+maybe_restart_manager() {
+	if [[ "${manager_updated:-no}" == "yes" ]]; then
+		printf '\n'
+		info "Manager was updated."
+		if ask_yes_no "Restart bhp now to use the updated manager UI?" "y"; then
+			# Reset so a failed exec does not loop on the next menu return.
+			manager_updated="no"
+			exec "$BIN_MANAGER" || warn "Could not restart bhp automatically. Exit and run 'bhp' again to use the updated UI."
+		fi
+	fi
 }
 
 # --------------------------------------------------------------------------- #
@@ -655,17 +799,15 @@ menu_service() {
 	while true; do
 		clear
 		print_panel "Service"
-		cat <<EOF
-
-  1. Start
-  2. Stop
-  3. Restart
-  4. Status
-  5. Enable on boot
-  6. Disable on boot
-  0. Back
-
-EOF
+		printf '\n'
+		menu_item 1 "Start"           "$C_GREEN"
+		menu_item 2 "Stop"            "$C_YELLOW"
+		menu_item 3 "Restart"         "$C_BOLD"
+		menu_item 4 "Status"          "$C_BOLD"
+		menu_item 5 "Enable on boot"  "$C_BOLD"
+		menu_item 6 "Disable on boot" "$C_YELLOW"
+		menu_item 0 "Back"            "$C_DIM"
+		printf '\n'
 		sep
 		read -r -p "$(printf ' %sEnter your choice [0-6]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
@@ -712,15 +854,13 @@ menu_config() {
 	while true; do
 		clear
 		print_panel "Config"
-		cat <<EOF
-
-  1. Edit config
-  2. Show config
-  3. Show config path
-  4. Backup config
-  0. Back
-
-EOF
+		printf '\n'
+		menu_item 1 "Edit config"      "$C_BOLD"
+		menu_item 2 "Show config"      "$C_BOLD"
+		menu_item 3 "Show config path" "$C_BOLD"
+		menu_item 4 "Backup config"    "$C_BOLD"
+		menu_item 0 "Back"             "$C_DIM"
+		printf '\n'
 		sep
 		read -r -p "$(printf ' %sEnter your choice [0-4]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
@@ -741,14 +881,12 @@ menu_logs() {
 	while true; do
 		clear
 		print_panel "Logs"
-		cat <<EOF
-
-  1. Live logs
-  2. Last 100 lines
-  3. Last boot logs
-  0. Back
-
-EOF
+		printf '\n'
+		menu_item 1 "Live logs"      "$C_BOLD"
+		menu_item 2 "Last 100 lines" "$C_BOLD"
+		menu_item 3 "Last boot logs" "$C_BOLD"
+		menu_item 0 "Back"           "$C_DIM"
+		printf '\n'
 		sep
 		read -r -p "$(printf ' %sEnter your choice [0-3]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
@@ -768,14 +906,12 @@ menu_backup() {
 	while true; do
 		clear
 		print_panel "Backup"
-		cat <<EOF
-
-  1. Backup config
-  2. Backup binary
-  3. Backup all
-  0. Back
-
-EOF
+		printf '\n'
+		menu_item 1 "Backup config" "$C_BOLD"
+		menu_item 2 "Backup binary" "$C_BOLD"
+		menu_item 3 "Backup all"    "$C_BOLD"
+		menu_item 0 "Back"          "$C_DIM"
+		printf '\n'
 		sep
 		read -r -p "$(printf ' %sEnter your choice [0-3]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
@@ -922,16 +1058,14 @@ menu_advanced() {
 	while true; do
 		clear
 		print_panel "Advanced / Recovery"
-		cat <<EOF
-
-  1. Rollback binary
-  2. Restore config backup
-  3. Reinstall service file
-  4. Show install paths
-  5. Uninstall
-  0. Back
-
-EOF
+		printf '\n'
+		menu_item 1 "Rollback binary"       "$C_YELLOW"
+		menu_item 2 "Restore config backup" "$C_YELLOW"
+		menu_item 3 "Reinstall service file" "$C_BOLD"
+		menu_item 4 "Show install paths"    "$C_BOLD"
+		menu_item 5 "Uninstall"             "$C_RED"
+		menu_item 0 "Back"                  "$C_DIM"
+		printf '\n'
 		sep
 		read -r -p "$(printf ' %sEnter your choice [0-5]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
@@ -978,18 +1112,16 @@ main_menu() {
 	while true; do
 		clear
 		print_main_header
-		cat <<EOF
-
-  1. Install / Repair
-  2. Update
-  3. Service
-  4. Config
-  5. Logs
-  6. Backup
-  7. Advanced
-  0. Exit
-
-EOF
+		printf '\n'
+		menu_item 1 "Install / Repair" "$C_BOLD"
+		menu_item 2 "Update"           "$C_GREEN"
+		menu_item 3 "Service"          "$C_BOLD"
+		menu_item 4 "Config"           "$C_BOLD"
+		menu_item 5 "Logs"             "$C_BOLD"
+		menu_item 6 "Backup"           "$C_BOLD"
+		menu_item 7 "Advanced"         "$C_YELLOW"
+		menu_item 0 "Exit"             "$C_DIM"
+		printf '\n'
 		sep
 		read -r -p "$(printf ' %sEnter your choice [0-7]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
