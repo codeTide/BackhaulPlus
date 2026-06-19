@@ -362,7 +362,7 @@ migrate_legacy() {
 		else
 			warn "No config.toml found inside ${LEGACY_DIR}."
 		fi
-		info "Legacy folder was left untouched. After verifying the new service, you may archive or remove it manually."
+		info "Legacy folder was left untouched for now. After the new service is confirmed running, the installer may offer optional cleanup with backup."
 	fi
 
 	migrate_legacy_services
@@ -661,19 +661,27 @@ update_source() {
 	ok "Source checkout ready."
 }
 
-build_binary() {
-	# Builds the daemon into a temp file and echoes its path on success.
+# build_binary_from: build the daemon from a given source directory into a temp
+# file and echo its path on success (non-zero on failure). Lets offline mode
+# build from the prepared source BEFORE replacing the installed checkout.
+build_binary_from() {
+	local dir="$1"
 	local tmpdir
 	tmpdir="$(mktemp -d /tmp/backhaulplus-build.XXXXXX)"
 	local out="${tmpdir}/backhaulplus"
 
 	info "Building daemon (this can take a moment)..." >&2
 	# Repository root is the main package.
-	( cd "$SRC_DIR" && go build -o "$out" . ) || {
+	( cd "$dir" && go build -o "$out" . ) || {
 		rm -rf "$tmpdir"
 		return 1
 	}
 	printf '%s\n' "$out"
+}
+
+build_binary() {
+	# Build from the installed source checkout.
+	build_binary_from "$SRC_DIR"
 }
 
 install_binary() {
@@ -797,23 +805,27 @@ main() {
 	create_dirs
 	migrate_legacy
 
+	local built=""
 	if offline_source_requested; then
+		# Offline mode: build from the prepared source BEFORE replacing the
+		# installed checkout, so a failed build leaves source/binary/service
+		# untouched. Only swap SRC_DIR in after a successful build.
 		local source_root
 		source_root="$(prepare_offline_source)"
+		if ! built="$(build_binary_from "$source_root")"; then
+			die "Build failed. Existing source, binary, and service were left untouched."
+		fi
 		install_offline_source_to_src_dir "$source_root"
 	else
 		update_source
+		if ! built="$(build_binary)"; then
+			die "Build failed. The existing installation (if any) was left untouched."
+		fi
 	fi
 
 	backup_existing_binary
-
-	local built=""
-	if built="$(build_binary)"; then
-		install_binary "$built"
-		rm -rf "$(dirname "$built")"
-	else
-		die "Build failed. The existing installation (if any) was left untouched."
-	fi
+	install_binary "$built"
+	rm -rf "$(dirname "$built")"
 
 	install_manager
 	install_service_unit

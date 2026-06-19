@@ -483,6 +483,26 @@ offline_source_requested() {
 	[[ -n "${BHP_SOURCE_DIR:-}" || -n "${BHP_SOURCE_ARCHIVE:-}" ]]
 }
 
+# validate_offline_env: reject setting both offline source env vars at once so
+# the user is never misled about which one is in effect. Returns non-zero.
+validate_offline_env() {
+	if [[ -n "${BHP_SOURCE_DIR:-}" && -n "${BHP_SOURCE_ARCHIVE:-}" ]]; then
+		err "Set only one of BHP_SOURCE_DIR or BHP_SOURCE_ARCHIVE, not both."
+		return 1
+	fi
+	return 0
+}
+
+# source_tree_valid: true when SRC_DIR looks like a usable BackhaulPlus source
+# tree, regardless of whether it is a git checkout. This lets Install / Repair
+# and rebuilds work with offline source installs that have no .git directory.
+source_tree_valid() {
+	[[ -d "$SRC_DIR" ]] || return 1
+	[[ -f "${SRC_DIR}/go.mod" ]] || return 1
+	[[ -f "${SRC_DIR}/scripts/bhp" ]] || return 1
+	return 0
+}
+
 # offline_archive_kind: classify a path. Echoes "tar", "zip", "dir", or
 # "unknown". A path with no archive extension that is an existing directory is
 # treated as a source directory.
@@ -736,6 +756,10 @@ install_binary_atomic() {
 # is set, run the offline update directly. Otherwise offer a choice between the
 # online (GitHub) update and an offline update from a local source/archive.
 do_update() {
+	if ! validate_offline_env; then
+		pause; return
+	fi
+
 	if offline_source_requested; then
 		do_update_offline
 		return
@@ -931,6 +955,9 @@ maybe_restart_manager() {
 # taken from BHP_SOURCE_DIR/BHP_SOURCE_ARCHIVE, or the user is prompted.
 do_update_offline() {
 	require_root || { pause; return; }
+	if ! validate_offline_env; then
+		pause; return
+	fi
 	if ! command -v go >/dev/null 2>&1; then
 		err "go is required to build from source. Install it and retry."
 		pause; return
@@ -1098,21 +1125,40 @@ do_install_repair() {
 		ok "Compatibility symlink ensured: ${BIN_COMPAT} -> ${BIN_DAEMON}"
 	fi
 
-	if [[ ! -f "$BIN_DAEMON" || ! -d "${SRC_DIR}/.git" ]]; then
-		warn "Source checkout or binary is missing."
-		if ask_yes_no "Run update/build now to (re)build the binary?" "y"; then
-			if command -v go >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
-				update_source
-				local built=""
-				if built="$(build_binary)"; then
-					install_binary_atomic "$built"
-					rm -rf "$(dirname "$built")"
-					ok "Binary built and installed."
+	# A source tree is considered usable if it is a git checkout OR a valid
+	# non-git source tree (e.g. installed via offline source mode).
+	if [[ ! -f "$BIN_DAEMON" ]] || { [[ ! -d "${SRC_DIR}/.git" ]] && ! source_tree_valid; }; then
+		warn "Source tree or binary is missing."
+		if ask_yes_no "Run a build now to (re)build the binary?" "y"; then
+			if source_tree_valid; then
+				# Valid local source (git or offline). Rebuild without requiring git.
+				if command -v go >/dev/null 2>&1; then
+					local built=""
+					if built="$(build_binary)"; then
+						install_binary_atomic "$built"
+						rm -rf "$(dirname "$built")"
+						ok "Binary built and installed from local source."
+					else
+						err "Build failed."
+					fi
 				else
-					err "Build failed."
+					err "go is required to build from local source. Install it and retry."
 				fi
 			else
-				err "git and go are required to build. Install them and retry."
+				# No valid local source; fall back to the online clone/build path.
+				if command -v go >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+					update_source
+					local built=""
+					if built="$(build_binary)"; then
+						install_binary_atomic "$built"
+						rm -rf "$(dirname "$built")"
+						ok "Binary built and installed."
+					else
+						err "Build failed."
+					fi
+				else
+					err "git and go are required to build from the repository. Install them and retry."
+				fi
 			fi
 		fi
 	fi

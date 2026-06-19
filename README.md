@@ -95,23 +95,44 @@ On a machine with internet access:
   (for example `BackhaulPlus-main.tar.gz` or `BackhaulPlus-main.zip`).
 * Copy it to the server.
 
-On the server (fresh install):
+A fresh offline install needs **both** the source (archive or extracted tree)
+**and** a local copy of `scripts/install.sh` to run — there is no `curl` from
+GitHub in offline mode. Choose one of the two workflows below.
+
+**Workflow A — extract the archive, then run the installer from the source
+tree.** Here `scripts/install.sh` lives inside the extracted source:
 
 ```bash
-sudo BHP_SOURCE_ARCHIVE=/root/BackhaulPlus-main.tar.gz bash scripts/install.sh
+tar -xzf /root/BackhaulPlus-main.tar.gz -C /root
+cd /root/BackhaulPlus-main
+sudo BHP_SOURCE_DIR=/root/BackhaulPlus-main bash scripts/install.sh
+```
+
+For a zip archive:
+
+```bash
+unzip /root/BackhaulPlus-main.zip -d /root
+cd /root/BackhaulPlus-main
+sudo BHP_SOURCE_DIR=/root/BackhaulPlus-main bash scripts/install.sh
+```
+
+**Workflow B — copy `install.sh` separately and point it at the archive.** Use
+this when you copied `install.sh` to the server on its own (e.g. to `/root`)
+and left the archive packed:
+
+```bash
+sudo BHP_SOURCE_ARCHIVE=/root/BackhaulPlus-main.tar.gz bash /root/install.sh
 ```
 
 or with a zip archive:
 
 ```bash
-sudo BHP_SOURCE_ARCHIVE=/root/BackhaulPlus-main.zip bash scripts/install.sh
+sudo BHP_SOURCE_ARCHIVE=/root/BackhaulPlus-main.zip bash /root/install.sh
 ```
 
-or if you already extracted the archive:
-
-```bash
-sudo BHP_SOURCE_DIR=/root/BackhaulPlus-main bash scripts/install.sh
-```
+In short: use `BHP_SOURCE_DIR` after extracting the source (Workflow A), and
+`BHP_SOURCE_ARCHIVE` when you copied `install.sh` separately and want the
+installer to extract the archive for you (Workflow B).
 
 For an existing install, run the manager with the same variable set and choose
 **Update**:
