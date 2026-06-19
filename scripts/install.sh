@@ -627,6 +627,147 @@ install_offline_source_to_src_dir() {
 	ok "Offline source installed to ${SRC_DIR}"
 }
 
+# source_tree_valid: true when SRC_DIR looks like a usable BackhaulPlus source
+# tree, regardless of whether it is a git checkout. Used to safely migrate a
+# non-git offline source tree to a git checkout on online installer re-runs.
+source_tree_valid() {
+	[[ -d "$SRC_DIR" ]] || return 1
+	[[ -f "${SRC_DIR}/go.mod" ]] || return 1
+	[[ -f "${SRC_DIR}/scripts/bhp" ]] || return 1
+	return 0
+}
+
+# --------------------------------------------------------------------------- #
+# Offline source cleanup (optional, opt-in, defaults to No)
+# --------------------------------------------------------------------------- #
+# After a successful offline install the installed source lives under SRC_DIR,
+# so the user-provided archive/extracted directory is no longer required. These
+# helpers optionally remove that temporary input with strict safety checks so
+# they can never delete the installed source, system paths, or the current
+# working directory.
+
+# canonical_path: resolve a path to its absolute, symlink-free form. Echoes the
+# resolved path on stdout, or returns non-zero if it cannot be resolved.
+canonical_path() {
+	local p="$1"
+	if command -v readlink >/dev/null 2>&1; then
+		readlink -f "$p" 2>/dev/null || return 1
+	else
+		# fallback: best effort
+		(cd "$(dirname "$p")" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$(basename "$p")") || return 1
+	fi
+}
+
+# is_current_or_parent_of_cwd: true when target IS the current working directory
+# or a parent of it.
+is_current_or_parent_of_cwd() {
+	local target="$1"
+	local cwd
+	cwd="$(pwd -P)"
+
+	[[ "$cwd" == "$target" ]] && return 0
+	case "$cwd" in
+		"$target"/*) return 0 ;;
+	esac
+	return 1
+}
+
+# is_dangerous_cleanup_path: true when target must never be removed (system
+# roots, the managed state/backup/config dirs, or the installed source tree).
+is_dangerous_cleanup_path() {
+	local target="$1"
+	local src_canon state_canon backup_canon config_canon
+
+	src_canon="$(canonical_path "$SRC_DIR" 2>/dev/null || true)"
+	state_canon="$(canonical_path "$STATE_DIR" 2>/dev/null || true)"
+	backup_canon="$(canonical_path "$BACKUP_DIR" 2>/dev/null || true)"
+	config_canon="$(canonical_path "$CONFIG_DIR" 2>/dev/null || true)"
+
+	case "$target" in
+		""|"/"|"/root"|"/home"|"/tmp"|"/var"|"/var/lib"|"/etc") return 0 ;;
+	esac
+
+	[[ -n "$src_canon" && "$target" == "$src_canon" ]] && return 0
+	[[ -n "$src_canon" && "$target" == "$src_canon"/* ]] && return 0
+	[[ -n "$state_canon" && "$target" == "$state_canon" ]] && return 0
+	[[ -n "$backup_canon" && "$target" == "$backup_canon" ]] && return 0
+	[[ -n "$config_canon" && "$target" == "$config_canon" ]] && return 0
+
+	return 1
+}
+
+# maybe_cleanup_offline_input: offer to remove the user-provided offline input
+# (archive or extracted source directory). Default is always No. Refuses unsafe
+# paths and only removes recognized archive types / validated source trees.
+maybe_cleanup_offline_input() {
+	local input="$1"
+	local kind="$2" # archive or dir
+
+	[[ -n "$input" ]] || return 0
+
+	local target
+	if ! target="$(canonical_path "$input")"; then
+		warn "Could not resolve offline source path for cleanup: $input"
+		return 0
+	fi
+
+	if is_dangerous_cleanup_path "$target"; then
+		warn "Not removing unsafe cleanup path: $target"
+		return 0
+	fi
+
+	case "$kind" in
+		archive)
+			[[ -f "$target" ]] || { warn "Offline archive not found for cleanup: $target"; return 0; }
+			case "$target" in
+				*.tar.gz|*.tgz|*.zip) ;;
+				*) warn "Not removing unsupported archive type: $target"; return 0 ;;
+			esac
+
+			if ask_yes_no "Remove offline source archive ${target}?" "n"; then
+				rm -f "$target"
+				ok "Removed offline source archive: ${target}"
+			else
+				info "Kept offline source archive: ${target}"
+			fi
+			;;
+		dir)
+			[[ -d "$target" ]] || { warn "Offline source directory not found for cleanup: $target"; return 0; }
+
+			# Validate again before even offering rm -rf.
+			if [[ ! -f "$target/go.mod" || ! -f "$target/scripts/bhp" ]]; then
+				warn "Not removing directory that does not look like BackhaulPlus source: $target"
+				return 0
+			fi
+
+			if is_current_or_parent_of_cwd "$target"; then
+				warn "Not removing source directory because the current shell is inside it: $target"
+				info "To remove it later, run from another directory:"
+				info "cd /root && sudo rm -rf '$target'"
+				return 0
+			fi
+
+			if ask_yes_no "Remove offline source directory ${target}?" "n"; then
+				rm -rf "$target"
+				ok "Removed offline source directory: ${target}"
+			else
+				info "Kept offline source directory: ${target}"
+			fi
+			;;
+	esac
+}
+
+# maybe_cleanup_offline_input_main: dispatch cleanup for the user-provided
+# offline input after a successful offline install. Only runs for offline mode.
+maybe_cleanup_offline_input_main() {
+	offline_source_requested || return 0
+	if [[ -n "${BHP_SOURCE_ARCHIVE:-}" ]]; then
+		maybe_cleanup_offline_input "$BHP_SOURCE_ARCHIVE" "archive"
+	elif [[ -n "${BHP_SOURCE_DIR:-}" ]]; then
+		maybe_cleanup_offline_input "$BHP_SOURCE_DIR" "dir"
+	fi
+}
+
 # --------------------------------------------------------------------------- #
 # Source checkout + build
 # --------------------------------------------------------------------------- #
@@ -643,6 +784,55 @@ ensure_origin_url() {
 	fi
 }
 
+# clone_online_source_to_new_dir: clone the configured repo into a fresh
+# temporary directory next to SRC_DIR. Echoes the new directory on success; the
+# current SRC_DIR is never touched. Removes the temp dir on failure.
+clone_online_source_to_new_dir() {
+	local new="${SRC_DIR}.git-new"
+
+	rm -rf "$new"
+	info "Cloning ${REPO_URL} (${REPO_BRANCH}) into ${new}..." >&2
+	if git_run git clone --branch "$REPO_BRANCH" "$REPO_URL" "$new" >&2; then
+		printf '%s' "$new"
+		return 0
+	fi
+
+	rm -rf "$new"
+	return 1
+}
+
+# replace_src_dir_with_prepared_checkout: swap a freshly prepared git checkout
+# into SRC_DIR. Backs up the current source first and only removes the old tree
+# after the swap succeeds; restores it if the final move fails.
+replace_src_dir_with_prepared_checkout() {
+	local new="$1"
+
+	[[ -d "$new/.git" ]] || { err "Prepared checkout is missing .git: $new"; return 1; }
+
+	backup_existing_source
+
+	local old="${SRC_DIR}.old.$(timestamp)"
+	rm -rf "$old"
+
+	if [[ -d "$SRC_DIR" ]]; then
+		mv "$SRC_DIR" "$old" || return 1
+	fi
+
+	if mv "$new" "$SRC_DIR"; then
+		rm -rf "$old"
+		ok "Installed online source checkout at ${SRC_DIR}"
+		return 0
+	fi
+
+	# Roll back source dir if the final move failed.
+	if [[ -d "$old" ]]; then
+		mv "$old" "$SRC_DIR" || true
+	fi
+
+	err "Failed to install online source checkout; restored previous source tree."
+	return 1
+}
+
 update_source() {
 	if [[ -d "${SRC_DIR}/.git" ]]; then
 		info "Updating source checkout in ${SRC_DIR}..."
@@ -652,12 +842,51 @@ update_source() {
 			"+refs/heads/${REPO_BRANCH}:refs/remotes/origin/${REPO_BRANCH}"
 		git -C "$SRC_DIR" checkout "$REPO_BRANCH"
 		git_run git -C "$SRC_DIR" pull --ff-only origin "$REPO_BRANCH"
-	else
+		ok "Source checkout ready."
+		return 0
+	fi
+
+	# A valid non-git source tree (typical of a previous offline install) cannot
+	# be updated with git. Migrate it to a real git checkout, cloning first and
+	# only swapping after the clone succeeds so the offline source is never lost.
+	if source_tree_valid; then
+		info "Current installed source is a valid non-git offline source."
+		info "Online install needs to replace it with a git checkout (a backup is created first)."
+		if ! ask_yes_no "Switch ${SRC_DIR} to an online git checkout now?" "y"; then
+			die "Online install cancelled; offline source left untouched."
+		fi
+		local new
+		if ! new="$(clone_online_source_to_new_dir)"; then
+			die "Clone failed; offline source left untouched."
+		fi
+		replace_src_dir_with_prepared_checkout "$new" || die "Could not install online source checkout."
+		ensure_origin_url
+		ok "Source checkout ready."
+		return 0
+	fi
+
+	# Missing or empty source dir: safe to clone fresh.
+	if [[ ! -d "$SRC_DIR" || -z "$(ls -A "$SRC_DIR" 2>/dev/null)" ]]; then
 		info "Cloning ${REPO_URL} into ${SRC_DIR}..."
-		# Clone into the (possibly empty) source dir.
 		rmdir "$SRC_DIR" 2>/dev/null || true
 		git_run git clone --branch "$REPO_BRANCH" "$REPO_URL" "$SRC_DIR"
+		ok "Source checkout ready."
+		return 0
 	fi
+
+	# Non-empty but unrecognized source tree: it may hold unknown user files, so
+	# default to No before replacing it.
+	warn "Source directory ${SRC_DIR} is neither a git checkout nor a valid BackhaulPlus source tree."
+	info "Online install would replace it with a git checkout (a backup is created first)."
+	if ! ask_yes_no "Replace ${SRC_DIR} with an online git checkout now?" "n"; then
+		die "Online install cancelled; ${SRC_DIR} left untouched."
+	fi
+	local new
+	if ! new="$(clone_online_source_to_new_dir)"; then
+		die "Clone failed; ${SRC_DIR} left untouched."
+	fi
+	replace_src_dir_with_prepared_checkout "$new" || die "Could not install online source checkout."
+	ensure_origin_url
 	ok "Source checkout ready."
 }
 
@@ -833,6 +1062,12 @@ main() {
 
 	# Optional, opt-in cleanup of legacy files, only after the new service is up.
 	offer_legacy_cleanup
+
+	# Optional, opt-in cleanup of the user-provided offline source input. The
+	# installed source now lives under SRC_DIR, so the temporary archive /
+	# extracted directory is no longer required. Default is No. Only reached
+	# after a successful offline install (failures exit earlier via die).
+	maybe_cleanup_offline_input_main
 
 	printf '\n'
 	ok "Done. Manage BackhaulPlus with: ${C_BOLD}sudo bhp${C_RESET}"
