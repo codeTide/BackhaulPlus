@@ -105,7 +105,7 @@ If your terminal renders Unicode box characters poorly, force ASCII-safe
 separators:
 
 ```bash
-BHP_ASCII=1 sudo bhp
+sudo BHP_ASCII=1 bhp
 ```
 
 ### Mirror support (repository / branch override)
@@ -119,14 +119,53 @@ BHP_REPO_URL="https://your-mirror.example.com/codeTide/BackhaulPlus.git" \
   bash install.sh
 ```
 
-and for manager updates:
+For manager updates, note that `sudo` may drop environment variables, so pass
+them explicitly. If you are already root:
 
 ```bash
-BHP_REPO_URL="https://your-mirror.example.com/codeTide/BackhaulPlus.git" sudo bhp
+BHP_REPO_URL="https://your-mirror.example.com/codeTide/BackhaulPlus.git" bhp
+```
+
+If you use `sudo`, set the variable on the `sudo` command itself, or preserve
+it:
+
+```bash
+sudo BHP_REPO_URL="https://your-mirror.example.com/codeTide/BackhaulPlus.git" bhp
+```
+
+```bash
+sudo --preserve-env=BHP_REPO_URL,BHP_REPO_BRANCH bhp
 ```
 
 The defaults are `https://github.com/codeTide/BackhaulPlus.git` and `main`. The
 active repository and branch are shown under **Advanced -> Show install paths**.
+When updating an existing checkout, `bhp` and the installer also point the
+checkout's `origin` remote at the configured URL, so a mirror override applies
+to existing installs and not just fresh clones.
+
+### Upgrading from the first manager version
+
+From this version onward, choosing **Update** in `bhp` also refreshes the
+manager script at `/usr/local/bin/bhp`, so future upgrades are automatic.
+
+The very first manager release did not self-update, so if you installed it
+before this version you may need a **one-time** action to pick up the new menu.
+Choose one of:
+
+* **Re-run the installer (safest):**
+
+  ```bash
+  bash <(curl -Ls https://raw.githubusercontent.com/codeTide/BackhaulPlus/main/scripts/install.sh)
+  ```
+
+* **From the old menu:** run `bhp`, choose **Update**, then choose
+  **Install / Repair**, then exit and run `bhp` again to see the new UI.
+
+* **Manual, after the source has been updated:**
+
+  ```bash
+  install -m 0755 /var/lib/backhaulplus/src/scripts/bhp /usr/local/bin/bhp
+  ```
 
 Installed paths:
 
@@ -149,7 +188,8 @@ The `bhp` tool is **interactive only** (no direct subcommands like
   commit (short SHA) and reports whether the checkout is up-to-date, behind,
   ahead of, or diverged from the remote. When already up-to-date it does not
   rebuild unless you confirm, and it never runs destructive git commands such
-  as `git reset --hard`.
+  as `git reset --hard`. Update also refreshes the manager script itself at
+  `/usr/local/bin/bhp` from the source checkout.
 * Service controls (start/stop/restart/status/enable/disable)
 * Config edit/show/backup
 * Logs (live, last 100 lines, last boot)

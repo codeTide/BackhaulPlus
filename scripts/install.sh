@@ -11,7 +11,8 @@
 #
 # This script is idempotent: re-running it repairs/updates the installation.
 # It installs the daemon, the interactive manager (bhp), a systemd unit, and
-# performs a source build from GitHub. It never touches tunnel runtime behavior.
+# performs a source build from GitHub by default (or from a mirror when
+# BHP_REPO_URL is set). It never touches tunnel runtime behavior.
 
 set -Eeuo pipefail
 
@@ -254,10 +255,26 @@ migrate_legacy_services() {
 # --------------------------------------------------------------------------- #
 # Source checkout + build
 # --------------------------------------------------------------------------- #
+# ensure_origin_url: point an existing checkout's origin at the configured
+# REPO_URL so BHP_REPO_URL overrides apply to existing clones (mirror support),
+# not just fresh clones.
+ensure_origin_url() {
+	if [[ -d "${SRC_DIR}/.git" ]]; then
+		if git -C "$SRC_DIR" remote get-url origin >/dev/null 2>&1; then
+			git -C "$SRC_DIR" remote set-url origin "$REPO_URL"
+		else
+			git -C "$SRC_DIR" remote add origin "$REPO_URL"
+		fi
+	fi
+}
+
 update_source() {
 	if [[ -d "${SRC_DIR}/.git" ]]; then
 		info "Updating source checkout in ${SRC_DIR}..."
-		git -C "$SRC_DIR" fetch --prune origin
+		ensure_origin_url
+		# Explicit refspec so origin/<branch> is reliably refreshed.
+		git -C "$SRC_DIR" fetch --prune origin \
+			"+refs/heads/${REPO_BRANCH}:refs/remotes/origin/${REPO_BRANCH}"
 		git -C "$SRC_DIR" checkout "$REPO_BRANCH"
 		git -C "$SRC_DIR" pull --ff-only origin "$REPO_BRANCH"
 	else
