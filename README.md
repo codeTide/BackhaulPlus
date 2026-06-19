@@ -738,10 +738,12 @@ routes = [
 
 An **HTTP gateway** is the cleartext sibling of `sni_gateway`. It opens **one**
 public TCP listener, reads each connection's **cleartext HTTP/1.x request
-header** (only up to `\r\n\r\n`, never the body), extracts the **Host** header,
-and dispatches the connection — with the inspected bytes preserved and replayed
-— into the tunnel of the routed `[[server]]`. TLS is never terminated and no
-certificate is required.
+header** (up to `\r\n\r\n`), extracts the **Host** header, and dispatches the
+connection — with **every inspected byte preserved and replayed** — into the
+tunnel of the routed `[[server]]`. The header is read in chunks, so a read may
+pick up a few bytes of the request body past the header terminator; those
+read-ahead bytes are always replayed downstream, so the request body is never
+lost. TLS is never terminated and no certificate is required.
 
 This is for XHTTP/HTTP setups that arrive as plain HTTP, e.g.:
 

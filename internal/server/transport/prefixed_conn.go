@@ -18,17 +18,29 @@ type PrefixedConn struct {
 
 // NewPrefixedConn returns a net.Conn that first yields prefix on Read and then
 // continues reading from conn. If prefix is empty, conn is returned unchanged.
+//
+// The prefix is copied into a tightly sized slice so the connection does not
+// retain a larger backing array (e.g. the preread scratch buffer) for the whole
+// lifetime of a long-lived HTTP/XHTTP connection.
 func NewPrefixedConn(conn net.Conn, prefix []byte) net.Conn {
 	if len(prefix) == 0 {
 		return conn
 	}
+	prefix = append([]byte(nil), prefix...)
 	return &PrefixedConn{Conn: conn, prefix: prefix}
 }
 
+// Read first drains the prefix, then delegates to the embedded connection. Once
+// the prefix has been fully consumed it is released so the bytes can be garbage
+// collected instead of being retained for the life of the connection.
 func (p *PrefixedConn) Read(b []byte) (int, error) {
-	if p.off < len(p.prefix) {
+	if len(p.prefix) > 0 {
 		n := copy(b, p.prefix[p.off:])
 		p.off += n
+		if p.off >= len(p.prefix) {
+			p.prefix = nil
+			p.off = 0
+		}
 		return n, nil
 	}
 	return p.Conn.Read(b)
