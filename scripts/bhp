@@ -15,8 +15,11 @@ set -Eeuo pipefail
 # --------------------------------------------------------------------------- #
 # Constants / paths
 # --------------------------------------------------------------------------- #
-REPO_URL="https://github.com/codeTide/BackhaulPlus.git"
-REPO_BRANCH="main"
+# Repository / branch can be overridden via environment variables. Useful for
+# updating from a mirror when GitHub access is blocked or slow:
+#   BHP_REPO_URL="https://mirror.example.com/codeTide/BackhaulPlus.git" bhp
+REPO_URL="${BHP_REPO_URL:-https://github.com/codeTide/BackhaulPlus.git}"
+REPO_BRANCH="${BHP_REPO_BRANCH:-main}"
 
 BIN_DAEMON="/usr/local/bin/backhaulplus"
 BIN_COMPAT="/usr/local/bin/BackhaulPlus"
@@ -36,18 +39,94 @@ SERVICE_UNIT="/etc/systemd/system/${SERVICE_NAME}"
 # --------------------------------------------------------------------------- #
 # Colors
 # --------------------------------------------------------------------------- #
-if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
+# supports_color: true when stdout is a TTY, tput exists, and the terminal
+# advertises at least 8 colors. Honors NO_COLOR to disable colors entirely.
+supports_color() {
+	[[ -n "${NO_COLOR:-}" ]] && return 1
+	[[ -t 1 ]] || return 1
+	command -v tput >/dev/null 2>&1 || return 1
+	[[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]
+}
+
+if supports_color; then
 	C_RESET="$(tput sgr0)"
 	C_BOLD="$(tput bold)"
+	C_DIM="$(tput dim 2>/dev/null || true)"
 	C_RED="$(tput setaf 1)"
 	C_GREEN="$(tput setaf 2)"
 	C_YELLOW="$(tput setaf 3)"
 	C_BLUE="$(tput setaf 4)"
 	C_MAGENTA="$(tput setaf 5)"
 	C_CYAN="$(tput setaf 6)"
+	C_BCYAN="$(tput setaf 14 2>/dev/null || tput setaf 6)"
 else
-	C_RESET=""; C_BOLD=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_BLUE=""; C_MAGENTA=""; C_CYAN=""
+	C_RESET=""; C_BOLD=""; C_DIM=""; C_RED=""; C_GREEN=""; C_YELLOW=""
+	C_BLUE=""; C_MAGENTA=""; C_CYAN=""; C_BCYAN=""
 fi
+
+# --------------------------------------------------------------------------- #
+# Layout helpers (separators, logo, headers)
+# --------------------------------------------------------------------------- #
+UI_WIDTH=64
+
+# use_ascii: true when ASCII-safe separators should be used. Triggered by
+# BHP_ASCII=1, a "dumb" terminal, or a non-UTF-8 locale.
+use_ascii() {
+	[[ "${BHP_ASCII:-0}" == "1" ]] && return 0
+	[[ "${TERM:-}" == "dumb" ]] && return 0
+	local enc="${LC_ALL:-${LC_CTYPE:-${LANG:-}}}"
+	case "$enc" in
+		*UTF-8*|*UTF8*|*utf-8*|*utf8*) return 1 ;;
+		"") return 0 ;;
+		*) return 0 ;;
+	esac
+}
+
+# sep: print a full-width colored separator line.
+sep() {
+	local ch line
+	if use_ascii; then ch="-"; else ch="━"; fi
+	# Build the line with the chosen character repeated UI_WIDTH times.
+	if use_ascii; then
+		line="$(printf '%*s' "$UI_WIDTH" '' | tr ' ' '-')"
+	else
+		line=""
+		local i
+		for ((i = 0; i < UI_WIDTH; i++)); do line+="$ch"; done
+	fi
+	printf '%s%s%s\n' "$C_CYAN" "$line" "$C_RESET"
+}
+
+# print_logo: large ASCII project title for the main menu.
+print_logo() {
+	printf '%s%s' "$C_BCYAN" "$C_BOLD"
+	cat <<'EOF'
+  ____             _    _                 _ ____  _
+ | __ )  __ _  ___| | _| |__   __ _ _   _| |  _ \| |_   _ ___
+ |  _ \ / _` |/ __| |/ / '_ \ / _` | | | | | |_) | | | | / __|
+ | |_) | (_| | (__|   <| | | | (_| | |_| | |  __/| | |_| \__ \
+ |____/ \__,_|\___|_|\_\_| |_|\__,_|\__,_|_|_|   |_|\__,_|___/
+EOF
+	printf '%s' "$C_RESET"
+}
+
+# label_value: print " Label : value" with colored label and value.
+label_value() {
+	local label="$1" value="$2" vcol="${3:-}"
+	printf ' %s%-8s%s: %s%s%s\n' \
+		"$C_BOLD" "$label" "$C_RESET" "${vcol}" "$value" "$C_RESET"
+}
+
+# status_color: echo the ANSI color appropriate for a service status word.
+status_color() {
+	case "$1" in
+		running|up-to-date)  printf '%s' "$C_GREEN" ;;
+		stopped|behind*)     printf '%s' "$C_YELLOW" ;;
+		failed|diverged)     printf '%s' "$C_RED" ;;
+		ahead*)              printf '%s' "$C_YELLOW" ;;
+		*)                   printf '%s' "$C_MAGENTA" ;;
+	esac
+}
 
 info()  { printf '%s==>%s %s\n' "${C_BLUE}${C_BOLD}" "${C_RESET}" "$*"; }
 ok()    { printf '%s[ ok ]%s %s\n' "${C_GREEN}" "${C_RESET}" "$*"; }
@@ -195,19 +274,91 @@ health_check() {
 }
 
 # --------------------------------------------------------------------------- #
+# Git status helpers
+# --------------------------------------------------------------------------- #
+# git_current_short: short SHA of the local HEAD (or "?" if unavailable).
+git_current_short() {
+	git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || printf '?'
+}
+
+# git_remote_short: short SHA of origin/<branch> (or "?" if unavailable).
+git_remote_short() {
+	git -C "$SRC_DIR" rev-parse --short "origin/${REPO_BRANCH}" 2>/dev/null || printf '?'
+}
+
+# git_update_status: classify local checkout vs origin/<branch>.
+# Prints one of: up-to-date, behind remote, ahead of remote, diverged, unknown.
+git_update_status() {
+	local local_sha remote_sha base_sha
+	local_sha="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)"
+	remote_sha="$(git -C "$SRC_DIR" rev-parse "origin/${REPO_BRANCH}" 2>/dev/null || true)"
+	if [[ -z "$local_sha" || -z "$remote_sha" ]]; then
+		printf 'unknown'; return
+	fi
+	base_sha="$(git -C "$SRC_DIR" merge-base HEAD "origin/${REPO_BRANCH}" 2>/dev/null || true)"
+	if [[ "$local_sha" == "$remote_sha" ]]; then
+		printf 'up-to-date'
+	elif [[ "$local_sha" == "$base_sha" ]]; then
+		printf 'behind remote'
+	elif [[ "$remote_sha" == "$base_sha" ]]; then
+		printf 'ahead of remote'
+	else
+		printf 'diverged'
+	fi
+}
+
+# print_update_preview: render the colored update preview block.
+# Args: status
+print_update_preview() {
+	local status="$1"
+	local svc; svc="$(service_status)"
+	sep
+	printf ' %s%sUpdate preview%s\n' "$C_BOLD" "$C_CYAN" "$C_RESET"
+	sep
+	label_value "Repo"    "$REPO_URL"            "$C_DIM"
+	label_value "Branch"  "$REPO_BRANCH"         "$C_CYAN"
+	label_value "Local"   "$(git_current_short)" "$C_CYAN"
+	label_value "Remote"  "$(git_remote_short)"  "$C_CYAN"
+	label_value "Status"  "$status"              "$(status_color "$status")"
+	label_value "Service" "$svc"                 "$(status_color "$svc")"
+	sep
+}
+
+# --------------------------------------------------------------------------- #
 # Update / build
 # --------------------------------------------------------------------------- #
+# ensure_source: make sure a source checkout exists; clone it if missing.
+ensure_source() {
+	if [[ -d "${SRC_DIR}/.git" ]]; then
+		return 0
+	fi
+	info "Cloning source..."
+	install -d -m 0755 "$STATE_DIR"
+	rmdir "$SRC_DIR" 2>/dev/null || true
+	git clone --branch "$REPO_BRANCH" "$REPO_URL" "$SRC_DIR"
+}
+
+# fetch_source: fetch the configured remote branch (no working-tree changes).
+fetch_source() {
+	info "Fetching origin/${REPO_BRANCH}..."
+	git -C "$SRC_DIR" fetch --prune origin "$REPO_BRANCH"
+}
+
+# apply_update: fast-forward the local checkout. Returns non-zero on failure
+# without making destructive changes (no reset --hard).
+apply_update() {
+	git -C "$SRC_DIR" checkout "$REPO_BRANCH" || return 1
+	git -C "$SRC_DIR" pull --ff-only origin "$REPO_BRANCH" || return 1
+}
+
+# update_source: used by Install / Repair. Clone or fast-forward only.
 update_source() {
 	if [[ -d "${SRC_DIR}/.git" ]]; then
 		info "Updating source checkout..."
-		git -C "$SRC_DIR" fetch --prune origin
-		git -C "$SRC_DIR" checkout "$REPO_BRANCH"
-		git -C "$SRC_DIR" pull --ff-only origin "$REPO_BRANCH"
+		git -C "$SRC_DIR" fetch --prune origin "$REPO_BRANCH"
+		apply_update
 	else
-		info "Cloning source..."
-		install -d -m 0755 "$STATE_DIR"
-		rmdir "$SRC_DIR" 2>/dev/null || true
-		git clone --branch "$REPO_BRANCH" "$REPO_URL" "$SRC_DIR"
+		ensure_source
 	fi
 }
 
@@ -238,10 +389,66 @@ do_update() {
 		err "git and go are required to update. Install them and retry."
 		pause; return
 	fi
-	if ! ask_yes_no "Update BackhaulPlus from GitHub now?" "y"; then
-		info "Update cancelled."
+
+	# 1. Ensure the source checkout exists (clone if missing).
+	if ! ensure_source; then
+		err "Could not prepare source checkout at ${SRC_DIR}."
 		pause; return
 	fi
+
+	# 2. Fetch the remote branch (read-only; safe).
+	if ! fetch_source; then
+		err "Failed to fetch origin/${REPO_BRANCH}. Check network or BHP_REPO_URL."
+		pause; return
+	fi
+
+	# 3. Determine local vs remote state and show a preview.
+	local status; status="$(git_update_status)"
+	clear
+	print_logo
+	printf '\n'
+	print_update_preview "$status"
+	printf '\n'
+
+	# 4. Decide how to proceed based on status.
+	case "$status" in
+		up-to-date)
+			if ! ask_yes_no "Already up to date. Rebuild/reinstall anyway?" "n"; then
+				info "Update cancelled; nothing to do."
+				pause; return
+			fi
+			;;
+		behind\ remote)
+			if ! ask_yes_no "Update now?" "y"; then
+				info "Update cancelled."
+				pause; return
+			fi
+			if ! apply_update; then
+				err "git pull --ff-only failed. Not building; service untouched."
+				err "Inspect the checkout at ${SRC_DIR}."
+				pause; return
+			fi
+			;;
+		ahead\ of\ remote)
+			warn "Local checkout is ahead of origin/${REPO_BRANCH}."
+			warn "Updating may discard local state if forced. This tool will NOT force."
+			if ! ask_yes_no "Rebuild from the current local checkout anyway?" "n"; then
+				info "Update cancelled. Inspect ${SRC_DIR} if this is unexpected."
+				pause; return
+			fi
+			# Rebuild from current local checkout without changing git state.
+			;;
+		diverged)
+			err "Local checkout has DIVERGED from origin/${REPO_BRANCH}."
+			err "Refusing to continue automatically to avoid losing work."
+			err "Inspect and reconcile manually: ${SRC_DIR}"
+			pause; return
+			;;
+		*)
+			err "Could not determine update status. Inspect ${SRC_DIR}."
+			pause; return
+			;;
+	esac
 
 	backup_config
 
@@ -260,8 +467,8 @@ do_update() {
 		was_active="yes"
 	fi
 
-	# Build must happen before stopping the service.
-	update_source
+	# Build must happen before stopping the service. The checkout is already
+	# at the desired commit (fast-forwarded above, or intentionally local).
 	local built=""
 	if ! built="$(build_binary)"; then
 		err "Build failed. Current binary left untouched; service not stopped."
@@ -403,16 +610,17 @@ menu_service() {
 		print_panel "Service"
 		cat <<EOF
 
-  1) Start
-  2) Stop
-  3) Restart
-  4) Status
-  5) Enable on boot
-  6) Disable on boot
-  0) Back
+  1. Start
+  2. Stop
+  3. Restart
+  4. Status
+  5. Enable on boot
+  6. Disable on boot
+  0. Back
 
 EOF
-		read -r -p "Select: " choice || choice="0"
+		sep
+		read -r -p "$(printf ' %sEnter your choice [0-6]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
 			1) svc_action start; pause ;;
 			2) svc_action stop; pause ;;
@@ -459,14 +667,15 @@ menu_config() {
 		print_panel "Config"
 		cat <<EOF
 
-  1) Edit config
-  2) Show config
-  3) Show config path
-  4) Backup config
-  0) Back
+  1. Edit config
+  2. Show config
+  3. Show config path
+  4. Backup config
+  0. Back
 
 EOF
-		read -r -p "Select: " choice || choice="0"
+		sep
+		read -r -p "$(printf ' %sEnter your choice [0-4]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
 			1) config_edit; pause ;;
 			2) config_show; pause ;;
@@ -487,13 +696,14 @@ menu_logs() {
 		print_panel "Logs"
 		cat <<EOF
 
-  1) Live logs
-  2) Last 100 lines
-  3) Last boot logs
-  0) Back
+  1. Live logs
+  2. Last 100 lines
+  3. Last boot logs
+  0. Back
 
 EOF
-		read -r -p "Select: " choice || choice="0"
+		sep
+		read -r -p "$(printf ' %sEnter your choice [0-3]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
 			1) info "Streaming logs (Ctrl+C to stop)..."; journalctl -u "$SERVICE_NAME" -f || true; pause ;;
 			2) journalctl -u "$SERVICE_NAME" -n 100 --no-pager || true; pause ;;
@@ -513,13 +723,14 @@ menu_backup() {
 		print_panel "Backup"
 		cat <<EOF
 
-  1) Backup config
-  2) Backup binary
-  3) Backup all
-  0) Back
+  1. Backup config
+  2. Backup binary
+  3. Backup all
+  0. Back
 
 EOF
-		read -r -p "Select: " choice || choice="0"
+		sep
+		read -r -p "$(printf ' %sEnter your choice [0-3]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
 			1) require_root && backup_config; pause ;;
 			2) require_root && backup_binary >/dev/null; pause ;;
@@ -603,15 +814,15 @@ adv_reinstall_service() {
 }
 
 adv_show_paths() {
-	cat <<EOF
-daemon:  ${BIN_DAEMON}
-symlink: ${BIN_COMPAT}
-manager: ${BIN_MANAGER}
-config:  ${CONFIG_FILE}
-source:  ${SRC_DIR}
-backup:  ${BACKUP_DIR}
-unit:    ${SERVICE_UNIT}
-EOF
+	label_value "repo"    "$REPO_URL"     "$C_CYAN"
+	label_value "branch"  "$REPO_BRANCH"  "$C_CYAN"
+	label_value "daemon"  "$BIN_DAEMON"   "$C_DIM"
+	label_value "symlink" "$BIN_COMPAT"   "$C_DIM"
+	label_value "manager" "$BIN_MANAGER"  "$C_DIM"
+	label_value "config"  "$CONFIG_FILE"  "$C_DIM"
+	label_value "source"  "$SRC_DIR"      "$C_DIM"
+	label_value "backup"  "$BACKUP_DIR"   "$C_DIM"
+	label_value "unit"    "$SERVICE_UNIT" "$C_DIM"
 }
 
 adv_uninstall() {
@@ -666,15 +877,16 @@ menu_advanced() {
 		print_panel "Advanced / Recovery"
 		cat <<EOF
 
-  1) Rollback binary
-  2) Restore config backup
-  3) Reinstall service file
-  4) Show install paths
-  5) Uninstall
-  0) Back
+  1. Rollback binary
+  2. Restore config backup
+  3. Reinstall service file
+  4. Show install paths
+  5. Uninstall
+  0. Back
 
 EOF
-		read -r -p "Select: " choice || choice="0"
+		sep
+		read -r -p "$(printf ' %sEnter your choice [0-5]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
 			1) adv_rollback_binary; pause ;;
 			2) adv_restore_config; pause ;;
@@ -690,57 +902,49 @@ EOF
 # --------------------------------------------------------------------------- #
 # Header / main menu
 # --------------------------------------------------------------------------- #
-# Draw a simple titled panel.
+# print_panel: compact submenu header (colored separator + title), no logo.
 print_panel() {
 	local title="$1"
-	local width=46
-	local line; line="$(printf '%*s' "$width" '' | tr ' ' '-')"
-	printf '%s+%s+%s\n' "$C_CYAN" "$line" "$C_RESET"
-	printf '%s| %s%-*s%s |%s\n' "$C_CYAN" "$C_BOLD" "$((width-2))" "$title" "$C_RESET$C_CYAN" "$C_RESET"
-	printf '%s+%s+%s\n' "$C_CYAN" "$line" "$C_RESET"
+	sep
+	printf ' %s%s%s%s\n' "$C_BOLD" "$C_CYAN" "$title" "$C_RESET"
+	sep
 }
 
-print_header() {
+# print_main_header: ASCII logo + colored status block for the main menu.
+print_main_header() {
 	local status; status="$(service_status)"
-	local status_col="$C_GREEN"
-	case "$status" in
-		running) status_col="$C_GREEN" ;;
-		stopped) status_col="$C_YELLOW" ;;
-		failed)  status_col="$C_RED" ;;
-		*)       status_col="$C_MAGENTA" ;;
-	esac
 	local ver; ver="$(binary_version)"
-	local width=46
-	local line; line="$(printf '%*s' "$width" '' | tr ' ' '-')"
 
-	printf '%s+%s+%s\n' "$C_CYAN" "$line" "$C_RESET"
-	printf '%s|%s%s%*s%s%s|%s\n' "$C_CYAN" "$C_BOLD$C_CYAN" "          BackhaulPlus Manager" "$((width-30))" "" "$C_RESET" "$C_CYAN" "$C_RESET"
-	printf '%s+%s+%s\n' "$C_CYAN" "$line" "$C_RESET"
-	printf '%s|%s Status : %s%-*s%s%s|%s\n' "$C_CYAN" "$C_RESET" "$status_col" "$((width-10))" "$status" "$C_RESET" "$C_CYAN" "$C_RESET"
-	printf '%s|%s Service: %-*s%s|%s\n' "$C_CYAN" "$C_RESET" "$((width-10))" "$SERVICE_NAME" "$C_CYAN" "$C_RESET"
-	printf '%s|%s Config : %-*s%s|%s\n' "$C_CYAN" "$C_RESET" "$((width-10))" "$CONFIG_FILE" "$C_CYAN" "$C_RESET"
-	printf '%s|%s Binary : %-*s%s|%s\n' "$C_CYAN" "$C_RESET" "$((width-10))" "$BIN_DAEMON" "$C_CYAN" "$C_RESET"
-	printf '%s|%s Version: %-*.*s%s|%s\n' "$C_CYAN" "$C_RESET" "$((width-10))" "$((width-10))" "$ver" "$C_CYAN" "$C_RESET"
-	printf '%s+%s+%s\n' "$C_CYAN" "$line" "$C_RESET"
+	print_logo
+	printf '\n\n'
+	sep
+	label_value "Version" "$ver"          "$C_CYAN"
+	label_value "Service" "$SERVICE_NAME" "$C_RESET"
+	label_value "Status"  "$status"       "$(status_color "$status")"
+	label_value "Config"  "$CONFIG_FILE"  "$C_DIM"
+	label_value "Binary"  "$BIN_DAEMON"   "$C_DIM"
+	label_value "Source"  "$SRC_DIR"      "$C_DIM"
+	sep
 }
 
 main_menu() {
 	while true; do
 		clear
-		print_header
+		print_main_header
 		cat <<EOF
 
-  1) Install / Repair
-  2) Update
-  3) Service
-  4) Config
-  5) Logs
-  6) Backup
-  7) Advanced
-  0) Exit
+  1. Install / Repair
+  2. Update
+  3. Service
+  4. Config
+  5. Logs
+  6. Backup
+  7. Advanced
+  0. Exit
 
 EOF
-		read -r -p "Select: " choice || choice="0"
+		sep
+		read -r -p "$(printf ' %sEnter your choice [0-7]:%s ' "$C_BOLD" "$C_RESET")" choice || choice="0"
 		case "$choice" in
 			1) do_install_repair ;;
 			2) do_update ;;

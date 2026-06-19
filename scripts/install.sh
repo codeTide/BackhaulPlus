@@ -18,8 +18,12 @@ set -Eeuo pipefail
 # --------------------------------------------------------------------------- #
 # Constants / paths
 # --------------------------------------------------------------------------- #
-REPO_URL="https://github.com/codeTide/BackhaulPlus.git"
-REPO_BRANCH="main"
+# Repository / branch can be overridden via environment variables. This is
+# useful for installing from a mirror when GitHub access is blocked or slow:
+#   BHP_REPO_URL="https://mirror.example.com/codeTide/BackhaulPlus.git" \
+#   BHP_REPO_BRANCH="main" bash install.sh
+REPO_URL="${BHP_REPO_URL:-https://github.com/codeTide/BackhaulPlus.git}"
+REPO_BRANCH="${BHP_REPO_BRANCH:-main}"
 
 BIN_DAEMON="/usr/local/bin/backhaulplus"
 BIN_COMPAT="/usr/local/bin/BackhaulPlus"
@@ -381,6 +385,8 @@ finalize_config_and_service() {
 # --------------------------------------------------------------------------- #
 main() {
 	printf '%s\n' "${C_CYAN}${C_BOLD}BackhaulPlus installer${C_RESET}"
+	info "Repository: ${REPO_URL}"
+	info "Branch:     ${REPO_BRANCH}"
 	require_root
 	detect_os
 	check_requirements

@@ -95,6 +95,39 @@ After installation, manage everything from the interactive menu:
 sudo bhp
 ```
 
+`bhp` provides a colored interactive menu with an ASCII project logo, colored
+section separators, and a clear status block. It uses no emojis and requires no
+external UI dependencies (no `dialog`, `whiptail`, `figlet`, or `toilet`).
+Colors are enabled through `tput` when the terminal supports them and degrade
+gracefully to plain text otherwise (also honoring `NO_COLOR`).
+
+If your terminal renders Unicode box characters poorly, force ASCII-safe
+separators:
+
+```bash
+BHP_ASCII=1 sudo bhp
+```
+
+### Mirror support (repository / branch override)
+
+Both the installer and `bhp` read the repository URL and branch from
+environment variables, which is useful when GitHub is blocked or slow and you
+want to use a mirror:
+
+```bash
+BHP_REPO_URL="https://your-mirror.example.com/codeTide/BackhaulPlus.git" \
+  bash install.sh
+```
+
+and for manager updates:
+
+```bash
+BHP_REPO_URL="https://your-mirror.example.com/codeTide/BackhaulPlus.git" sudo bhp
+```
+
+The defaults are `https://github.com/codeTide/BackhaulPlus.git` and `main`. The
+active repository and branch are shown under **Advanced -> Show install paths**.
+
 Installed paths:
 
 ```text
@@ -111,7 +144,12 @@ The `bhp` tool is **interactive only** (no direct subcommands like
 `bhp update`). It provides:
 
 * Install / Repair
-* Update (with automatic backup and rollback on failed health check)
+* Update (with automatic backup and rollback on failed health check). Before
+  building, the update flow shows a preview comparing the local and remote
+  commit (short SHA) and reports whether the checkout is up-to-date, behind,
+  ahead of, or diverged from the remote. When already up-to-date it does not
+  rebuild unless you confirm, and it never runs destructive git commands such
+  as `git reset --hard`.
 * Service controls (start/stop/restart/status/enable/disable)
 * Config edit/show/backup
 * Logs (live, last 100 lines, last boot)
